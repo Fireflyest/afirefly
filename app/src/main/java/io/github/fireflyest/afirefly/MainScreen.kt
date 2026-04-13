@@ -8,6 +8,7 @@ import android.content.Intent
 import android.content.ServiceConnection
 import android.os.Bundle
 import android.os.IBinder
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -64,9 +65,20 @@ import org.json.JSONObject
 import java.text.SimpleDateFormat
 import java.util.*
 
+data class Device(
+    val name: String,
+    val subtitle: String,
+    val uid: String,
+    val status: String,
+    val signal: String,
+    val battery: String,
+    val locked: Boolean,
+    val gps: Boolean
+)
+
+
 @Composable
 fun MainScreen() {
-
     // use system color scheme (dark/light) via MaterialTheme
     val colors = androidx.compose.material3.MaterialTheme.colorScheme
     val view = LocalView.current
@@ -77,6 +89,10 @@ fun MainScreen() {
         mutableStateListOf<Device>()
     }
     var selectedDeviceUid by remember { mutableStateOf<String?>(null) }
+
+    val quickCommands = remember {
+        mutableStateListOf<String>()
+    }
 
     var bluetoothService by remember { mutableStateOf<BluetoothLeService?>(null) }
     val logs = remember { mutableStateListOf<String>() }
@@ -102,7 +118,7 @@ fun MainScreen() {
 
     val serviceState by (bluetoothService?.connectionState ?: MutableStateFlow(BluetoothLeService.STATE_DISCONNECTED)).collectAsState()
 
-    // Load saved devices on startup
+    // Load saved devices and quick commands on startup
     LaunchedEffect(Unit) {
         val prefs = ctx.getSharedPreferences("afirefly_prefs", Context.MODE_PRIVATE)
         val savedJson = prefs.getString("saved_devices", null)
@@ -125,6 +141,19 @@ fun MainScreen() {
                 }
                 devices.clear()
                 devices.addAll(loadedDevices)
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+
+        val savedQuicks = prefs.getString("quick_commands", null)
+        if (savedQuicks != null) {
+            try {
+                val jsonArray = JSONArray(savedQuicks)
+                quickCommands.clear()
+                for (i in 0 until jsonArray.length()) {
+                    quickCommands.add(jsonArray.getString(i))
+                }
             } catch (e: Exception) {
                 e.printStackTrace()
             }
@@ -166,6 +195,36 @@ fun MainScreen() {
             
             val timestamp = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date())
             logs.add("$timestamp INFO: Device saved: ${device.name}")
+        }
+    }
+
+    // Save a quick command to permanent storage
+    fun saveQuickCommand(command: String) {
+        if (command.isBlank()) return
+        scope.launch {
+            if (!quickCommands.contains(command)) {
+                quickCommands.add(0, command)
+                val prefs = ctx.getSharedPreferences("afirefly_prefs", Context.MODE_PRIVATE)
+                val jsonArray = JSONArray(quickCommands)
+                prefs.edit().putString("quick_commands", jsonArray.toString()).apply()
+
+                Toast.makeText(ctx, "指令已保存 (Command saved)", Toast.LENGTH_SHORT).show()
+            } else {
+                Toast.makeText(ctx, "指令已存在 (Command already exists)", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
+    // Remove a quick command from permanent storage
+    fun removeQuickCommand(command: String) {
+        scope.launch {
+            if (quickCommands.remove(command)) {
+                val prefs = ctx.getSharedPreferences("afirefly_prefs", Context.MODE_PRIVATE)
+                val jsonArray = JSONArray(quickCommands)
+                prefs.edit().putString("quick_commands", jsonArray.toString()).apply()
+
+                Toast.makeText(ctx, "指令已删除 (Command removed)", Toast.LENGTH_SHORT).show()
+            }
         }
     }
 
@@ -344,11 +403,18 @@ fun MainScreen() {
                     onDeviceDisconnect = { bluetoothService?.disconnect() },
                     onDeviceMove = { uid, up -> moveDevice(uid, up) }
                 )
-                FooterBar(onSendMessage = { msg ->
-                    bluetoothService?.sendData(msg)
-                    val timestamp = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date())
-                    logs.add("$timestamp SEND: $msg")
-                })
+                FooterBar(
+                    quickCommands = quickCommands,
+                    onSendMessage = { msg ->
+                        bluetoothService?.sendData(msg)
+                        val timestamp = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date())
+                        logs.add("$timestamp SEND: $msg")
+                    },
+                    onSaveCommand = { 
+                        saveQuickCommand(it) 
+                    },
+                    onRemoveCommand = { removeQuickCommand(it) }
+                )
             }
         }
     }
@@ -1217,8 +1283,13 @@ fun LogRow(text: String) {
 }
 
 @Composable
-@OptIn(ExperimentalMaterial3Api::class)
-fun FooterBar(onSendMessage: (String) -> Unit = {}) {
+@OptIn(ExperimentalMaterial3Api::class, androidx.compose.foundation.ExperimentalFoundationApi::class)
+fun FooterBar(
+    quickCommands: List<String>,
+    onSendMessage: (String) -> Unit = {},
+    onSaveCommand: (String) -> Unit = {},
+    onRemoveCommand: (String) -> Unit = {}
+) {
     val colors = androidx.compose.material3.MaterialTheme.colorScheme
     Row(modifier = Modifier
         .navigationBarsPadding()
@@ -1323,21 +1394,31 @@ fun FooterBar(onSendMessage: (String) -> Unit = {}) {
                         }
                     }
                 } else {
-                    Button(
-                        onClick = {
-                            onSendMessage(inputText)
-                            inputText = ""
-                        },
+                    // Use a Box as the container for the button logic to ensure combinedClickable
+                    // handles both events without the Button's internal onClick taking precedence.
+                    Box(
                         modifier = Modifier
                             .height(44.dp)
-                            .padding(end = 4.dp),
-                        shape = RoundedCornerShape(8.dp),
-                        colors = androidx.compose.material3.ButtonDefaults.buttonColors(
-                            containerColor = colors.surfaceVariant,
-                            contentColor = colors.onSurface
-                        )
+                            .padding(end = 4.dp)
+                            .background(colors.surfaceVariant, shape = RoundedCornerShape(8.dp))
+                            .combinedClickable(
+                                onClick = {
+                                    onSendMessage(inputText)
+                                    inputText = ""
+                                },
+                                onLongClick = {
+                                    onSaveCommand(inputText)
+                                }
+                            )
+                            .padding(horizontal = 16.dp),
+                        contentAlignment = Alignment.Center
                     ) {
-                        Text("SEND", fontWeight = FontWeight.Bold)
+                        Text(
+                            "SEND",
+                            color = colors.onSurface,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 14.sp
+                        )
                     }
                 }
             }
@@ -1345,16 +1426,29 @@ fun FooterBar(onSendMessage: (String) -> Unit = {}) {
 
         // quick commands bottom sheet (appears from bottom)
         if (showQuickDialog) {
-            val quicks = listOf("AT+POLL_TELEMETRY=1", "AT+RESYNC=4", "AT+THRUST_COMP=0.98")
             ModalBottomSheet(onDismissRequest = { showQuickDialog = false }) {
                 Column(modifier = Modifier
                     .fillMaxWidth()
                     .padding(16.dp)) {
                     Text("Quick Commands", fontWeight = FontWeight.Bold, fontSize = 16.sp)
                     Spacer(modifier = Modifier.height(8.dp))
-                    quicks.forEach { cmd ->
-                        TextButton(onClick = { inputText = cmd; showQuickDialog = false }, modifier = Modifier.fillMaxWidth()) {
-                            Text(cmd, fontFamily = FontFamily.Monospace)
+                    quickCommands.forEach { cmd ->
+                        // Wrap in a box or just use the combinedClickable modifier properly
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .combinedClickable(
+                                    onClick = {
+                                        onSendMessage(cmd)
+                                        showQuickDialog = false
+                                    },
+                                    onLongClick = {
+                                        onRemoveCommand(cmd)
+                                    }
+                                )
+                                .padding(vertical = 12.dp, horizontal = 16.dp)
+                        ) {
+                            Text(cmd, fontFamily = FontFamily.Monospace, modifier = Modifier.fillMaxWidth(), textAlign = TextAlign.Start)
                         }
                     }
                     Spacer(modifier = Modifier.height(8.dp))
@@ -1367,16 +1461,7 @@ fun FooterBar(onSendMessage: (String) -> Unit = {}) {
     }
 }
 
-data class Device(
-    val name: String,
-    val subtitle: String,
-    val uid: String,
-    val status: String,
-    val signal: String,
-    val battery: String,
-    val locked: Boolean,
-    val gps: Boolean
-)
+
 
 // Sample logs for preview
 fun sampleLogs(): List<String> = emptyList()
@@ -1388,3 +1473,5 @@ fun MainScreenPreview() {
         MainScreen()
     }
 }
+
+
