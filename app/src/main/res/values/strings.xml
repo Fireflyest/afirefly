@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">Afirefly</string>
+    <string name="title_activity_scan">ScanActivity</string>
+</resources>
