@@ -72,10 +72,12 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
 import io.github.fireflyest.afirefly.ui.theme.AfPrimary
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.tooling.preview.Preview
 import io.github.fireflyest.afirefly.ui.theme.AfireflyTheme
+import androidx.annotation.DrawableRes
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 
@@ -89,38 +91,47 @@ data class ScannedDevice(
     val serviceUuids: List<String> = emptyList()
 )
 
-// Simple heuristic mapping from scanned device metadata to an icon (emoji) string.
-// Top-level so it can be used by both runtime UI and preview UI.
-// You can replace emoji with ImageVector icons later if you prefer.
-fun getDeviceIconEmoji(device: ScannedDevice): String {
+// Map device metadata to a vector drawable icon.
+@DrawableRes
+fun getDeviceIconRes(device: ScannedDevice): Int {
     val name = device.name?.lowercase() ?: ""
     val uuids = device.serviceUuids.joinToString(separator = " ") { it.lowercase() }
 
-    // Common BLE service UUID substrings
     return when {
-        // Battery Service 0x180F
-        uuids.contains("0000180f") || name.contains("battery") -> "🔋"
-        // Heart Rate 0x180D
-        uuids.contains("0000180d") || name.contains("heart") || name.contains("hrm") -> "❤️"
-        // Generic audio / speaker
-        name.contains("audio") || name.contains("speaker") || name.contains("mona") || name.contains("sound") -> "🎵"
-        // Watch / wearable
-        name.contains("watch") || name.contains("fit") || name.contains("band") -> "⌚"
-        // Phone / handset / headset
-        name.contains("phone") || name.contains("headset") || name.contains("headphones") -> "📱"
-        // GPS / location
-        name.contains("gps") || name.contains("location") || name.contains("nav") -> "📍"
-        // Sensor / thermometer
-        name.contains("temp") || name.contains("therm") || name.contains("sensor") -> "🌡️"
-        // Gateway / bridge / router-like
-        name.contains("bridge") || name.contains("gateway") || name.contains("link") || name.contains("router") -> "📡"
-        // Drone / vehicle hints
-        name.contains("drone") || name.contains("vtol") || name.contains("fly") -> "🚁"
-        // Fallback based on device type
-        device.deviceType == BluetoothDevice.DEVICE_TYPE_CLASSIC -> "📱"
-        device.deviceType == BluetoothDevice.DEVICE_TYPE_LE -> "🟦"
-        device.deviceType == BluetoothDevice.DEVICE_TYPE_DUAL -> "🔗"
-        else -> "🔊"
+        device.deviceType == BluetoothDevice.DEVICE_TYPE_CLASSIC -> when {
+            name.contains("audio") || name.contains("speaker") || name.contains("headset") || name.contains("headphones") || name.contains("sound") -> R.drawable.ic_device_audio
+            name.contains("phone") -> R.drawable.ic_device_phone
+            name.contains("bridge") || name.contains("gateway") || name.contains("link") || name.contains("router") -> R.drawable.ic_device_gateway
+            else -> R.drawable.ic_device_classic
+        }
+        device.deviceType == BluetoothDevice.DEVICE_TYPE_LE -> when {
+            uuids.contains("0000180f") || name.contains("battery") -> R.drawable.ic_device_battery
+            uuids.contains("0000180d") || name.contains("heart") || name.contains("hrm") -> R.drawable.ic_device_sensor
+            name.contains("temp") || name.contains("therm") || name.contains("sensor") -> R.drawable.ic_device_sensor
+            name.contains("gps") || name.contains("location") || name.contains("nav") -> R.drawable.ic_device_gateway
+            name.contains("drone") || name.contains("vtol") || name.contains("fly") -> R.drawable.ic_device_unknown
+            name.contains("watch") || name.contains("fit") || name.contains("band") -> R.drawable.ic_device_classic
+            else -> R.drawable.ic_device_le
+        }
+        device.deviceType == BluetoothDevice.DEVICE_TYPE_DUAL -> when {
+            name.contains("audio") || name.contains("speaker") || name.contains("headset") || name.contains("headphones") -> R.drawable.ic_device_audio
+            name.contains("sensor") || name.contains("temp") || name.contains("therm") -> R.drawable.ic_device_sensor
+            name.contains("bridge") || name.contains("gateway") || name.contains("link") || name.contains("router") -> R.drawable.ic_device_gateway
+            else -> R.drawable.ic_device_dual
+        }
+        else -> when {
+            // Common BLE service UUID substrings
+            uuids.contains("0000180f") || name.contains("battery") -> R.drawable.ic_device_battery
+            uuids.contains("0000180d") || name.contains("heart") || name.contains("hrm") -> R.drawable.ic_device_sensor
+            name.contains("audio") || name.contains("speaker") || name.contains("mona") || name.contains("sound") -> R.drawable.ic_device_audio
+            name.contains("watch") || name.contains("fit") || name.contains("band") -> R.drawable.ic_device_classic
+            name.contains("phone") || name.contains("headset") || name.contains("headphones") -> R.drawable.ic_device_phone
+            name.contains("gps") || name.contains("location") || name.contains("nav") -> R.drawable.ic_device_gateway
+            name.contains("temp") || name.contains("therm") || name.contains("sensor") -> R.drawable.ic_device_sensor
+            name.contains("bridge") || name.contains("gateway") || name.contains("link") || name.contains("router") -> R.drawable.ic_device_gateway
+            name.contains("drone") || name.contains("vtol") || name.contains("fly") -> R.drawable.ic_device_unknown
+            else -> R.drawable.ic_device_unknown
+        }
     }
 }
 
@@ -417,8 +428,12 @@ fun ScanScreen(modifier: Modifier = Modifier) {
                             // Left area: icon + name/address. Give it weight so the right controls keep fixed space
                             Row(modifier = Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                                 Box(modifier = Modifier.size(36.dp).background(colors.surfaceVariant.copy(alpha = 0.3f), shape = RoundedCornerShape(8.dp)), contentAlignment = Alignment.Center) {
-                                    // icon chosen by device metadata (name, service UUIDs, device type)
-                                    Text(text = getDeviceIconEmoji(device), style = androidx.compose.material3.MaterialTheme.typography.bodyMedium)
+                                        Icon(
+                                            painter = painterResource(id = getDeviceIconRes(device)),
+                                            contentDescription = null,
+                                            tint = colors.onSurface,
+                                            modifier = Modifier.size(18.dp)
+                                        )
                                 }
                                 // Make the text column take remaining space and ellipsize long names so the right-side controls
                                 // (signal + Connect) keep their fixed width and are not pushed out.
@@ -550,7 +565,12 @@ fun ScanScreenPreviewContent() {
                         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                             Row(modifier = Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                                 Box(modifier = Modifier.size(40.dp).background(colors.surfaceVariant.copy(alpha = 0.3f), shape = RoundedCornerShape(8.dp)), contentAlignment = Alignment.Center) {
-                                    Text(text = getDeviceIconEmoji(device))
+                                    Icon(
+                                        painter = painterResource(id = getDeviceIconRes(device)),
+                                        contentDescription = null,
+                                        tint = colors.onSurface,
+                                        modifier = Modifier.size(20.dp)
+                                    )
                                 }
                                 Column(modifier = Modifier.weight(1f)) {
                                     Text(
