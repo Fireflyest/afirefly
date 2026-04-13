@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.wrapContentHeight
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -62,6 +63,9 @@ import androidx.compose.ui.draw.alpha
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.material3.IconButton
+import androidx.compose.animation.Crossfade
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ModalBottomSheet
@@ -145,7 +149,11 @@ fun SlimOutlinedTextField(
     onValueChange: (String) -> Unit,
     modifier: Modifier = Modifier,
     placeholder: @Composable () -> Unit = {},
-    singleLine: Boolean = true,
+    singleLine: Boolean = false,
+    // support multiline behavior: minLines and maxLines control sizing; when singleLine=false
+    // the field will wrap content and grow as text expands (unless caller forces height).
+    minLines: Int = 1,
+    maxLines: Int = Int.MAX_VALUE,
     // avoid imposing a large lineHeight here; vertical centering for single-line inputs
     // is handled by the container. For multi-line inputs we align top and add small padding.
     textStyle: TextStyle = TextStyle(fontFamily = FontFamily.Monospace, fontSize = 13.sp),
@@ -153,45 +161,55 @@ fun SlimOutlinedTextField(
     borderColor: Color,
     backgroundColor: Color
 ) {
-    // Use a box with CenterStart alignment so text (and placeholder) is vertically centered
+    // Use a box whose vertical alignment depends on whether we should center the first line.
+    // Center when singleLine or when there is no newline yet; switch to top-start after user
+    // inserts a newline so the field grows from the top.
+    val useCenter = singleLine || !value.contains('\n')
     Box(
         modifier = modifier
             .border(1.dp, borderColor, shape)
             .background(backgroundColor, shape)
-            // only horizontal padding here; vertical centering is handled by the inner container
+            // only horizontal padding here; vertical alignment handled by contentAlignment below
             .padding(horizontal = 10.dp),
-        contentAlignment = Alignment.CenterStart
+        contentAlignment = if (useCenter) Alignment.CenterStart else Alignment.TopStart
     ) {
-                BasicTextField(
-                    value = value,
-                    onValueChange = onValueChange,
-                    singleLine = singleLine,
-                    textStyle = textStyle,
-                    cursorBrush = SolidColor(borderColor),
-                    // allow multi-line to wrap content; single-line will be vertically centered by
-                    // the decoration box filling available height
-                    modifier = Modifier.then(if (singleLine) Modifier.fillMaxWidth() else Modifier.fillMaxWidth().wrapContentHeight()),
-                    decorationBox = { innerTextField ->
-                        // For single-line fields we center vertically by filling the height; for multi-line
-                        // we let the inner box wrap its height and align top with small padding so text starts
-                        // near the top and the outer caller can grow the box as content expands.
-                        val innerModifier = if (singleLine) {
-                            Modifier.fillMaxWidth().fillMaxHeight()
-                        } else {
-                            Modifier
-                                .fillMaxWidth()
-                                .wrapContentHeight()
-                                .padding(vertical = 6.dp)
+        BasicTextField(
+            value = value,
+            onValueChange = onValueChange,
+            singleLine = singleLine,
+            maxLines = maxLines,
+            textStyle = textStyle,
+            cursorBrush = SolidColor(borderColor),
+            // allow multi-line to wrap content; single-line will be vertically centered by
+            // the decoration box filling available height
+            modifier = Modifier.then(if (singleLine) Modifier.fillMaxWidth() else Modifier.fillMaxWidth().wrapContentHeight()),
+
+            decorationBox = { innerTextField ->
+                // For single-line fields we center vertically by filling the height; for multi-line
+                // we let the inner box wrap its height and align top with small padding so text starts
+                // near the top and the outer caller can grow the box as content expands.
+                val baseInner = if (useCenter) {
+                    // don't expand to parent's max height when centered; keep reasonable min height
+                    Modifier.fillMaxWidth().heightIn(min = 44.dp)
+                } else {
+                    Modifier
+                        .fillMaxWidth()
+                        .wrapContentHeight()
+                        .padding(vertical = 6.dp)
+                }
+                // if caller requested a minLines > 1, ensure a minimum height when not centered
+                val innerModifier = if (!useCenter && minLines > 1) {
+                    baseInner.heightIn(min = (minLines * 20).dp)
+                } else baseInner
+                val alignment = if (useCenter) Alignment.CenterStart else Alignment.TopStart
+                Box(modifier = innerModifier, contentAlignment = alignment) {
+                        if (value.isEmpty()) {
+                            placeholder()
                         }
-                        val alignment = if (singleLine) Alignment.CenterStart else Alignment.TopStart
-                        Box(modifier = innerModifier, contentAlignment = alignment) {
-                            if (value.isEmpty()) {
-                                placeholder()
-                            }
-                            innerTextField()
-                        }
+                        innerTextField()
                     }
-                )
+            }
+        )
     }
 }
 
@@ -400,7 +418,7 @@ fun FooterBar() {
         .navigationBarsPadding()
         .fillMaxWidth()
         .background(colors.surface.copy(alpha = 0.9f))
-        .padding(6.dp), verticalAlignment = Alignment.CenterVertically) {
+        .padding(6.dp), verticalAlignment = Alignment.Bottom) {
         // left toggle button (attached to input) - visual toggle
         var isHex by remember { mutableStateOf(false) }
         // input state (was previously a fixed empty string) -> now editable
@@ -433,63 +451,80 @@ fun FooterBar() {
             )
         }
         // input directly adjacent to left button, matching height and straight shared edge
+        // compute animated target height based on number of lines (approx per-line height)
+        val lineCount = (if (inputText.isEmpty()) 1 else inputText.count { it == '\n' } + 1)
+        val perLineDp = 20.dp
+        val targetHeight = (44.dp + perLineDp * (lineCount - 1)).coerceAtMost(150.dp)
+        val animHeight by animateDpAsState(targetHeight, animationSpec = tween(durationMillis = 220))
+
         Box(modifier = Modifier
             .weight(1f)
-            .height(44.dp)
+            .height(animHeight)
             .padding(start = 0.dp, end = 4.dp)) {
             // reduce end padding when clear icon is shown so text doesn't overlap
             val innerPaddingEnd = if (inputText.isNotBlank()) 32.dp else 8.dp
             SlimOutlinedTextField(
                 value = inputText,
                 onValueChange = { inputText = it },
-                placeholder = { Text("ENTER COMMAND", color = colors.outline, fontSize = 14.sp, lineHeight = 44.sp) },
+                placeholder = { Text("ENTER COMMAND", color = colors.outline, fontSize = 14.sp) },
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(44.dp)
+                    .height(animHeight)
                     .padding(end = innerPaddingEnd),
+                // enable multi-line input so Enter creates new lines; allow up to 6 lines visually
                 singleLine = false,
-                textStyle = TextStyle(fontFamily = FontFamily.Monospace, fontSize = 14.sp, lineHeight = 14.sp),
+                minLines = 1,
+                maxLines = 6,
+                textStyle = TextStyle(fontFamily = FontFamily.Monospace, fontSize = 14.sp, lineHeight = 18.sp),
                 shape = RoundedCornerShape(topStart = 0.dp, bottomStart = 0.dp, topEnd = 8.dp, bottomEnd = 8.dp),
                 borderColor = colors.outline,
                 backgroundColor = colors.surface
             )
 
-            // clear icon inside input when text present
-            if (inputText.isNotBlank()) {
+            // clear icon inside input when text present (animated)
+            androidx.compose.animation.AnimatedVisibility(visible = inputText.isNotBlank()) {
+                // align the clear icon to match text alignment: center for single-line, top for multi-line
+                val iconAlignment = if (lineCount == 1) Alignment.CenterEnd else Alignment.TopEnd
                 IconButton(onClick = { inputText = "" }, modifier = Modifier
-                    .align(Alignment.CenterEnd)
+                    .align(iconAlignment)
+                    .padding(top = if (lineCount == 1) 0.dp else 8.dp)
                     .size(28.dp)) {
                     Icon(imageVector = Icons.Default.Close, contentDescription = "clear", tint = colors.outline)
                 }
             }
         }
 
-        // SEND vs QUICK-ADD behaviour: when no text, show a circular add button which opens quick commands;
-        // when there is text, show SEND button
-        if (inputText.isBlank()) {
-            IconButton(onClick = { showQuickDialog = true }, modifier = Modifier
-                .size(44.dp)
-                .padding(end = 6.dp)) {
-                // outlined circular add (no fill)
-                Box(modifier = Modifier
-                    .size(36.dp)
-                    .border(1.dp, colors.outline, shape = RoundedCornerShape(18.dp)), contentAlignment = Alignment.Center) {
-                    Icon(imageVector = Icons.Default.Add, contentDescription = "add", tint = colors.primary)
+        // SEND vs QUICK-ADD behaviour with animated size sync with clear icon
+        val targetButtonWidth = if (inputText.isBlank()) 50.dp else 100.dp
+        val animButtonWidth by animateDpAsState(targetButtonWidth, animationSpec = tween(durationMillis = 220))
+        Box(modifier = Modifier.width(animButtonWidth)) {
+            Crossfade(targetState = inputText.isNotBlank(), label = "send_add_crossfade") { hasText ->
+                if (!hasText) {
+                    IconButton(onClick = { showQuickDialog = true }, modifier = Modifier
+                        .size(44.dp)
+                        .padding(end = 6.dp)) {
+                        // outlined circular add (no fill)
+                        Box(modifier = Modifier
+                            .size(36.dp)
+                            .border(1.dp, colors.outline, shape = RoundedCornerShape(18.dp)), contentAlignment = Alignment.Center) {
+                            Icon(imageVector = Icons.Default.Add, contentDescription = "add", tint = colors.primary)
+                        }
+                    }
+                } else {
+                    Button(
+                        onClick = { /* TODO: send the command */ },
+                        modifier = Modifier
+                            .height(44.dp)
+                            .padding(end = 6.dp),
+                        shape = RoundedCornerShape(8.dp),
+                        colors = androidx.compose.material3.ButtonDefaults.buttonColors(
+                            containerColor = colors.surfaceVariant,
+                            contentColor = colors.onSurface
+                        )
+                    ) {
+                        Text("SEND", fontWeight = FontWeight.Bold)
+                    }
                 }
-            }
-        } else {
-            Button(
-                onClick = { /* TODO: send the command */ },
-                modifier = Modifier
-                    .height(44.dp)
-                    .padding(end = 6.dp),
-                shape = RoundedCornerShape(8.dp),
-                colors = androidx.compose.material3.ButtonDefaults.buttonColors(
-                    containerColor = colors.surfaceVariant,
-                    contentColor = colors.onSurface
-                )
-            ) {
-                Text("SEND", fontWeight = FontWeight.Bold)
             }
         }
 
