@@ -2,14 +2,19 @@ package io.github.fireflyest.afirefly
 
 import android.os.Bundle
 import android.app.Activity
+import android.os.Handler
+import android.os.Looper
+import android.graphics.Color as AndroidColor
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 // ...existing imports...
@@ -24,23 +29,23 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.Button
-import androidx.compose.material3.Card
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.ui.graphics.Brush
-// ...existing imports...
+import androidx.compose.ui.graphics.graphicsLayer
 import android.annotation.SuppressLint
 import android.content.pm.PackageManager
 import android.Manifest
 import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothManager
 import android.bluetooth.le.BluetoothLeScanner
+import android.bluetooth.BluetoothDevice
 import android.bluetooth.le.ScanCallback
 import android.bluetooth.le.ScanResult
 import android.bluetooth.le.ScanSettings
@@ -51,16 +56,16 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.SideEffect
 import androidx.compose.ui.platform.LocalView
-import androidx.compose.foundation.isSystemInDarkTheme
 import com.google.accompanist.systemuicontroller.rememberSystemUiController
 import kotlinx.coroutines.delay
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.DisposableEffect
 import androidx.core.content.ContextCompat
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.text.style.TextOverflow
@@ -72,30 +77,76 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.tooling.preview.Preview
 import io.github.fireflyest.afirefly.ui.theme.AfireflyTheme
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.ArrowBack
-import androidx.compose.material.icons.filled.SignalCellular4Bar
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 
 data class ScannedDevice(
     val name: String?,
     val address: String,
-    var rssi: Int
+    var rssi: Int,
+    // bluetooth device type (BluetoothDevice.DEVICE_TYPE_*) if available
+    val deviceType: Int = BluetoothDevice.DEVICE_TYPE_UNKNOWN,
+    // service UUIDs observed in the scan record (strings)
+    val serviceUuids: List<String> = emptyList()
 )
+
+// Simple heuristic mapping from scanned device metadata to an icon (emoji) string.
+// Top-level so it can be used by both runtime UI and preview UI.
+// You can replace emoji with ImageVector icons later if you prefer.
+fun getDeviceIconEmoji(device: ScannedDevice): String {
+    val name = device.name?.lowercase() ?: ""
+    val uuids = device.serviceUuids.joinToString(separator = " ") { it.lowercase() }
+
+    // Common BLE service UUID substrings
+    return when {
+        // Battery Service 0x180F
+        uuids.contains("0000180f") || name.contains("battery") -> "🔋"
+        // Heart Rate 0x180D
+        uuids.contains("0000180d") || name.contains("heart") || name.contains("hrm") -> "❤️"
+        // Generic audio / speaker
+        name.contains("audio") || name.contains("speaker") || name.contains("mona") || name.contains("sound") -> "🎵"
+        // Watch / wearable
+        name.contains("watch") || name.contains("fit") || name.contains("band") -> "⌚"
+        // Phone / handset / headset
+        name.contains("phone") || name.contains("headset") || name.contains("headphones") -> "📱"
+        // GPS / location
+        name.contains("gps") || name.contains("location") || name.contains("nav") -> "📍"
+        // Sensor / thermometer
+        name.contains("temp") || name.contains("therm") || name.contains("sensor") -> "🌡️"
+        // Gateway / bridge / router-like
+        name.contains("bridge") || name.contains("gateway") || name.contains("link") || name.contains("router") -> "📡"
+        // Drone / vehicle hints
+        name.contains("drone") || name.contains("vtol") || name.contains("fly") -> "🚁"
+        // Fallback based on device type
+        device.deviceType == BluetoothDevice.DEVICE_TYPE_CLASSIC -> "📱"
+        device.deviceType == BluetoothDevice.DEVICE_TYPE_LE -> "🟦"
+        device.deviceType == BluetoothDevice.DEVICE_TYPE_DUAL -> "🔗"
+        else -> "🔊"
+    }
+}
 
 
 class ScanActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        WindowCompat.setDecorFitsSystemWindows(window, false)
+        @Suppress("DEPRECATION")
+        runCatching {
+            window.statusBarColor = AndroidColor.TRANSPARENT
+            window.navigationBarColor = AndroidColor.TRANSPARENT
+        }
         setContent {
             AfireflyTheme {
-                Scaffold { innerPadding ->
-                    ScanScreen(modifier = Modifier.padding(innerPadding))
+                Scaffold { contentPadding ->
+                    @Suppress("UNUSED_VARIABLE") val ignore = contentPadding
+                    ScanScreen(modifier = Modifier.fillMaxSize())
                 }
             }
         }
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @SuppressLint("MissingPermission")
 @Composable
 fun ScanScreen(modifier: Modifier = Modifier) {
@@ -144,15 +195,21 @@ fun ScanScreen(modifier: Modifier = Modifier) {
                 // ignore devices without a discoverable name (per request)
                 if (name.isNullOrBlank()) return
                 val rssi = result.rssi
-                val idx = scannedDevices.indexOfFirst { it.address == addr }
-                if (idx >= 0) {
-                    scannedDevices[idx].rssi = rssi
-                } else {
-                    scannedDevices.add(ScannedDevice(name, addr, rssi))
+                val deviceType = try { d.type } catch (_: Exception) { BluetoothDevice.DEVICE_TYPE_UNKNOWN }
+                val uuids = result.scanRecord?.serviceUuids?.map { it.uuid.toString() } ?: emptyList()
+                Handler(Looper.getMainLooper()).post {
+                    val idx = scannedDevices.indexOfFirst { it.address == addr }
+                    if (idx >= 0) {
+                        scannedDevices[idx].rssi = rssi
+                    } else {
+                        scannedDevices.add(ScannedDevice(name, addr, rssi, deviceType, uuids))
+                    }
                 }
             }
         }
     }
+
+// ...existing code...
 
     // helper to start/stop scanning
     val startScanAction: () -> Unit = {
@@ -243,12 +300,20 @@ fun ScanScreen(modifier: Modifier = Modifier) {
     Box(modifier = modifier.fillMaxSize()) {
         // set system bars to match the surface so header/footer feel immersive
         val view = LocalView.current
-        val isDark = isSystemInDarkTheme()
+        val isDarkTheme = androidx.compose.foundation.isSystemInDarkTheme()
         if (!view.isInEditMode) {
             val systemUiController = rememberSystemUiController()
             SideEffect {
-                systemUiController.setStatusBarColor(color = colors.surface, darkIcons = !isDark)
-                systemUiController.setNavigationBarColor(color = colors.surface.copy(alpha = 0.9f), darkIcons = !isDark)
+                // Make both bars transparent; use dark icons on light backgrounds.
+                systemUiController.setStatusBarColor(color = Color.Transparent, darkIcons = !isDarkTheme)
+                systemUiController.setNavigationBarColor(color = Color.Transparent, darkIcons = false)
+            }
+            SideEffect {
+                val window = activity?.window ?: return@SideEffect
+                WindowInsetsControllerCompat(window, view).apply {
+                    isAppearanceLightStatusBars = !isDarkTheme
+                    isAppearanceLightNavigationBars = false
+                }
             }
         }
         Column(modifier = Modifier.fillMaxSize()) {
@@ -256,6 +321,7 @@ fun ScanScreen(modifier: Modifier = Modifier) {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
+                    .statusBarsPadding()
                     .background(colors.surface.copy(alpha = 0.4f))
                     .height(80.dp)
                     .padding(horizontal = 20.dp),
@@ -265,7 +331,7 @@ fun ScanScreen(modifier: Modifier = Modifier) {
                 // left: back + title
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     IconButton(onClick = { activity?.finish() }) {
-                        Icon(imageVector = Icons.Default.ArrowBack, contentDescription = "back", tint = colors.onSurface)
+                        Icon(imageVector = Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "back", tint = colors.onSurface)
                     }
                     Column {
                         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -326,19 +392,33 @@ fun ScanScreen(modifier: Modifier = Modifier) {
             LazyColumn(modifier = Modifier
                 .fillMaxSize()
                 .padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                items(scannedDevices) { device ->
-                    // replicate card style from HTML for scanned devices
+                items(items = scannedDevices, key = { it.address }) { device ->
+                    val appeared = remember(device.address) { mutableStateOf(false) }
+                    LaunchedEffect(device.address) {
+                        appeared.value = false
+                        delay(16)
+                        appeared.value = true
+                    }
+                    val enterAlpha by animateFloatAsState(targetValue = if (appeared.value) 1f else 0f, animationSpec = tween(280), label = "itemAlpha")
+                    val enterOffset by animateFloatAsState(targetValue = if (appeared.value) 0f else 18f, animationSpec = tween(280), label = "itemOffset")
+
+                    // replicate card style from HTML for scanned devices; animate placement when reordering
                     Box(modifier = Modifier
                         .fillMaxWidth()
+                        .animateItemPlacement()
+                        .graphicsLayer {
+                            alpha = enterAlpha
+                            translationY = enterOffset
+                        }
                         .background(colors.surface.copy(alpha = 0.08f), shape = RoundedCornerShape(12.dp))
                         .border(1.dp, colors.surfaceVariant.copy(alpha = 0.2f), shape = RoundedCornerShape(12.dp))
                         .padding(12.dp)) {
                         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                             // Left area: icon + name/address. Give it weight so the right controls keep fixed space
                             Row(modifier = Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                                Box(modifier = Modifier.size(40.dp).background(colors.surfaceVariant.copy(alpha = 0.3f), shape = RoundedCornerShape(8.dp)), contentAlignment = Alignment.Center) {
-                                    // placeholder icon
-                                    Text(text = "🔊")
+                                Box(modifier = Modifier.size(36.dp).background(colors.surfaceVariant.copy(alpha = 0.3f), shape = RoundedCornerShape(8.dp)), contentAlignment = Alignment.Center) {
+                                    // icon chosen by device metadata (name, service UUIDs, device type)
+                                    Text(text = getDeviceIconEmoji(device), style = androidx.compose.material3.MaterialTheme.typography.bodyMedium)
                                 }
                                 // Make the text column take remaining space and ellipsize long names so the right-side controls
                                 // (signal + Connect) keep their fixed width and are not pushed out.
@@ -370,7 +450,7 @@ fun ScanScreen(modifier: Modifier = Modifier) {
                                     device.rssi >= -105 -> 1
                                     else -> 0
                                 }
-                                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp), modifier = Modifier.width(18.dp)) {
+                                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp), modifier = Modifier.width(16.dp)) {
                                     // four vertical bars with increasing height (narrower bars)
                                     val heights = listOf(6.dp, 10.dp, 14.dp, 18.dp)
                                     Row(horizontalArrangement = Arrangement.spacedBy(2.dp), verticalAlignment = Alignment.Bottom) {
@@ -385,47 +465,17 @@ fun ScanScreen(modifier: Modifier = Modifier) {
                                 }
                                 // glass Connect button with stable (reduced) width so it's not pushed out
                                 Box(modifier = Modifier
-                                    .width(82.dp)
+                                    .width(80.dp)
                                     .background(AfPrimary.copy(alpha = 0.05f), shape = RoundedCornerShape(10.dp))
                                     .border(1.dp, AfPrimary.copy(alpha = 0.2f), shape = RoundedCornerShape(10.dp))
-                                    .padding(horizontal = 12.dp, vertical = 8.dp), contentAlignment = Alignment.Center) {
+                                    .padding(horizontal = 10.dp, vertical = 8.dp), contentAlignment = Alignment.Center) {
                                     Text(text = "Connect", color = AfPrimary, style = androidx.compose.material3.MaterialTheme.typography.bodySmall)
                                 }
                             }
                         }
                     }
                 }
-                item {
-                    Spacer(modifier = Modifier.size(120.dp))
-                }
-            }
-        }
-    }
-}
-
-@Composable
-fun DeviceRow(device: Device) {
-    val colors = androidx.compose.material3.MaterialTheme.colorScheme
-    Card(shape = RoundedCornerShape(12.dp), modifier = Modifier.fillMaxWidth()) {
-        Row(modifier = Modifier
-            .fillMaxWidth()
-            .padding(12.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                Box(modifier = Modifier.size(40.dp).background(colors.surfaceVariant, shape = RoundedCornerShape(8.dp)), contentAlignment = Alignment.Center) {
-                    // placeholder icon
-                    Text(text = "🔊")
-                }
-                Column {
-                    Text(text = device.name, style = androidx.compose.material3.MaterialTheme.typography.titleMedium)
-                    Text(text = device.uid, style = androidx.compose.material3.MaterialTheme.typography.bodySmall)
-                }
-            }
-
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                Text(text = "-62 dBm", style = androidx.compose.material3.MaterialTheme.typography.bodySmall)
-                Button(onClick = { /* connect action placeholder */ }) {
-                    Text("CONNECT")
-                }
+                item { Spacer(modifier = Modifier.height(96.dp)) }
             }
         }
     }
@@ -455,6 +505,7 @@ fun ScanScreenPreviewContent() {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
+                    .statusBarsPadding()
                     .background(colors.surface.copy(alpha = 0.4f))
                     .height(80.dp)
                     .padding(horizontal = 20.dp),
@@ -463,7 +514,7 @@ fun ScanScreenPreviewContent() {
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     IconButton(onClick = {}) {
-                        Icon(imageVector = Icons.Default.ArrowBack, contentDescription = "back", tint = colors.onSurface)
+                        Icon(imageVector = Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "back", tint = colors.onSurface)
                     }
                     Column {
                         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -499,7 +550,7 @@ fun ScanScreenPreviewContent() {
                         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                             Row(modifier = Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                                 Box(modifier = Modifier.size(40.dp).background(colors.surfaceVariant.copy(alpha = 0.3f), shape = RoundedCornerShape(8.dp)), contentAlignment = Alignment.Center) {
-                                    Text(text = "🔊")
+                                    Text(text = getDeviceIconEmoji(device))
                                 }
                                 Column(modifier = Modifier.weight(1f)) {
                                     Text(
@@ -544,7 +595,7 @@ fun ScanScreenPreviewContent() {
                         }
                     }
                 }
-                item { Spacer(modifier = Modifier.size(120.dp)) }
+                item { Spacer(modifier = Modifier.height(96.dp)) }
             }
         }
     }
