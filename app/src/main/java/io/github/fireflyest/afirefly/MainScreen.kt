@@ -2,106 +2,60 @@ package io.github.fireflyest.afirefly
 
 import android.app.Activity
 import android.content.ComponentName
+import android.content.Intent
 import android.content.ServiceConnection
+import android.os.Bundle
 import android.os.IBinder
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.Crossfade
+import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.wrapContentHeight
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.layout.wrapContentWidth
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.Icons
-// Icons used: Bluetooth, Signal
-import androidx.compose.material.icons.filled.Bluetooth
-import androidx.compose.material.icons.filled.BatteryFull
-import androidx.compose.material.icons.filled.Lock
-import androidx.compose.material.icons.filled.LockOpen
-import androidx.compose.material.icons.filled.SignalCellular4Bar
-import androidx.compose.material.icons.filled.LocationOn
-import androidx.compose.material.icons.filled.Search
- 
-import androidx.compose.material3.Button
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.Icon
-// OutlinedTextField replaced by SlimOutlinedTextField for compact inputs
-import androidx.compose.foundation.border
 import androidx.compose.foundation.text.BasicTextField
-import androidx.compose.ui.graphics.SolidColor
-import androidx.compose.material3.Surface
-import androidx.compose.material3.Text
-// MaterialTheme import not needed in this file
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.mutableStateListOf
-import androidx.compose.runtime.SideEffect
-import androidx.compose.runtime.collectAsState
-import androidx.compose.foundation.isSystemInDarkTheme
-import androidx.compose.ui.platform.LocalView
-import androidx.compose.ui.platform.LocalContext
-import android.content.Intent
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
-import com.google.accompanist.systemuicontroller.rememberSystemUiController
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.*
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.animation.animateContentSize
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
- 
-import androidx.compose.foundation.layout.statusBarsPadding
-import androidx.compose.foundation.layout.navigationBarsPadding
-import androidx.compose.material3.IconButton
-import androidx.compose.animation.Crossfade
-import androidx.compose.animation.core.animateDpAsState
-import androidx.compose.material3.TextButton
-import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.ModalBottomSheet
-import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.Close
-import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.buildAnnotatedString
-import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-
+import com.google.accompanist.systemuicontroller.rememberSystemUiController
 import io.github.fireflyest.afirefly.ui.theme.AfireflyTheme
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
 import kotlinx.coroutines.flow.MutableStateFlow
+import java.text.SimpleDateFormat
+import java.util.*
 
 @Composable
 fun MainScreen() {
@@ -114,6 +68,7 @@ fun MainScreen() {
     val devices = remember {
         mutableStateListOf<Device>()
     }
+    var selectedDeviceUid by remember { mutableStateOf<String?>(null) }
 
     var bluetoothService by remember { mutableStateOf<BluetoothLeService?>(null) }
     val logs = remember { mutableStateListOf<String>() }
@@ -161,6 +116,8 @@ fun MainScreen() {
             } else {
                 devices.add(0, newDevice)
             }
+            // Auto-select the newly added device
+            selectedDeviceUid = newDevice.uid
             // Automatically connect to the scanned device
             bluetoothService?.connect(newDevice.uid)
         }
@@ -223,9 +180,16 @@ fun MainScreen() {
             Column(modifier = Modifier.fillMaxSize()) {
                 TopHeader(
                     onOpenScan = { scanLauncher.launch(Intent(ctx, ScanActivity::class.java)) },
-                    bluetoothService = bluetoothService
+                    bluetoothService = bluetoothService,
+                    selectedDeviceUid = selectedDeviceUid
                 )
-                MainContent(modifier = Modifier.weight(1f), devices = devices, logs = logs)
+                MainContent(
+                    modifier = Modifier.weight(1f), 
+                    devices = devices, 
+                    logs = logs,
+                    selectedDeviceUid = selectedDeviceUid,
+                    onDeviceSelected = { selectedDeviceUid = it }
+                )
                 FooterBar(onSendMessage = { msg ->
                     bluetoothService?.sendData(msg)
                     val timestamp = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date())
@@ -312,7 +276,7 @@ fun SlimOutlinedTextField(
 }
 
 @Composable
-fun TopHeader(onOpenScan: () -> Unit, bluetoothService: BluetoothLeService?) {
+fun TopHeader(onOpenScan: () -> Unit, bluetoothService: BluetoothLeService?, selectedDeviceUid: String?) {
     val colors = androidx.compose.material3.MaterialTheme.colorScheme
     // Collapsible capsule search: shows a small pill with icon+label, expands to full search field on tap
     var expanded by remember { mutableStateOf(false) }
@@ -321,11 +285,23 @@ fun TopHeader(onOpenScan: () -> Unit, bluetoothService: BluetoothLeService?) {
     // Dropdown states for Service and Characteristic
     var serviceExpanded by remember { mutableStateOf(false) }
     var charExpanded by remember { mutableStateOf(false) }
+
+    // Selected UUIDs
+    var selectedServiceUuid by remember(selectedDeviceUid) { mutableStateOf<String?>(null) }
+    var selectedCharUuid by remember(selectedDeviceUid, selectedServiceUuid) { mutableStateOf<String?>(null) }
     
-    // We observe the available services from the bluetooth service
-    // For now we use the connected device's services if available
-    val services = emptyList<String>() // Placeholder for actual GATT services
-    val characteristics = emptyList<String>() // Placeholder for selected service's chars
+    // We observe the available services from the bluetooth service for the selected device
+    val services by (bluetoothService?.discoveredServices ?: MutableStateFlow(emptyList())).collectAsState()
+
+    val currentService = remember(selectedServiceUuid, services) {
+        services.find { it.uuid.toString() == selectedServiceUuid }
+    }
+    val characteristics = remember(currentService) {
+        currentService?.characteristics ?: emptyList()
+    }
+
+    // Helper to get short hex from full UUID string
+    fun getShortUuid(uuid: String?): String? = uuid?.substring(4, 8)?.uppercase()
 
     Row(modifier = Modifier
         .statusBarsPadding()
@@ -376,22 +352,35 @@ fun TopHeader(onOpenScan: () -> Unit, bluetoothService: BluetoothLeService?) {
         Box {
             TextButton(
                 onClick = { serviceExpanded = true },
-                modifier = Modifier.height(40.dp).width(56.dp),
+                modifier = Modifier.height(40.dp).width(72.dp), // widened to fit hex
                 shape = RoundedCornerShape(20.dp),
                 colors = androidx.compose.material3.ButtonDefaults.textButtonColors(
                     containerColor = colors.surfaceVariant,
-                    contentColor = colors.primary
+                    contentColor = if (selectedServiceUuid != null) colors.primary else colors.onSurfaceVariant
                 ),
                 contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp)
             ) {
-                Text("SRV", fontSize = 13.sp, fontFamily = FontFamily.Monospace)
+                Text(
+                    text = getShortUuid(selectedServiceUuid) ?: "SRV",
+                    fontSize = 13.sp,
+                    fontFamily = FontFamily.Monospace,
+                    fontWeight = if (selectedServiceUuid != null) FontWeight.Bold else FontWeight.Normal
+                )
             }
             DropdownMenu(expanded = serviceExpanded, onDismissRequest = { serviceExpanded = false }) {
                 if (services.isEmpty()) {
                     DropdownMenuItem(text = { Text("No Services", fontSize = 12.sp) }, onClick = { serviceExpanded = false })
                 }
                 services.forEach { srv ->
-                    DropdownMenuItem(text = { Text(srv, fontSize = 12.sp) }, onClick = { serviceExpanded = false })
+                    val uuidStr = srv.uuid.toString()
+                    val shortUuid = getShortUuid(uuidStr)!!
+                    DropdownMenuItem(
+                        text = { Text("0x$shortUuid", fontSize = 12.sp, fontFamily = FontFamily.Monospace) },
+                        onClick = {
+                            selectedServiceUuid = uuidStr
+                            serviceExpanded = false
+                        }
+                    )
                 }
             }
         }
@@ -402,22 +391,36 @@ fun TopHeader(onOpenScan: () -> Unit, bluetoothService: BluetoothLeService?) {
         Box {
             TextButton(
                 onClick = { charExpanded = true },
-                modifier = Modifier.height(40.dp).width(56.dp),
+                modifier = Modifier.height(40.dp).width(72.dp), // widened to fit hex
                 shape = RoundedCornerShape(20.dp),
                 colors = androidx.compose.material3.ButtonDefaults.textButtonColors(
                     containerColor = colors.surfaceVariant,
-                    contentColor = colors.primary
+                    contentColor = if (selectedCharUuid != null) colors.primary else colors.onSurfaceVariant
                 ),
                 contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp)
             ) {
-                Text("CHR", fontSize = 13.sp, fontFamily = FontFamily.Monospace)
+                Text(
+                    text = getShortUuid(selectedCharUuid) ?: "CHR",
+                    fontSize = 13.sp,
+                    fontFamily = FontFamily.Monospace,
+                    fontWeight = if (selectedCharUuid != null) FontWeight.Bold else FontWeight.Normal
+                )
             }
             DropdownMenu(expanded = charExpanded, onDismissRequest = { charExpanded = false }) {
                 if (characteristics.isEmpty()) {
-                    DropdownMenuItem(text = { Text("No Characteristics", fontSize = 12.sp) }, onClick = { charExpanded = false })
+                    val msg = if (selectedServiceUuid == null) "Select SRV" else "No Chars"
+                    DropdownMenuItem(text = { Text(msg, fontSize = 12.sp) }, onClick = { charExpanded = false })
                 }
                 characteristics.forEach { chr ->
-                    DropdownMenuItem(text = { Text(chr, fontSize = 12.sp) }, onClick = { charExpanded = false })
+                    val uuidStr = chr.uuid.toString()
+                    val shortUuid = getShortUuid(uuidStr)!!
+                    DropdownMenuItem(
+                        text = { Text("0x$shortUuid", fontSize = 12.sp, fontFamily = FontFamily.Monospace) },
+                        onClick = {
+                            selectedCharUuid = uuidStr
+                            charExpanded = false
+                        }
+                    )
                 }
             }
         }
@@ -435,13 +438,23 @@ fun TopHeader(onOpenScan: () -> Unit, bluetoothService: BluetoothLeService?) {
 }
 
 @Composable
-fun MainContent(modifier: Modifier = Modifier, devices: List<Device>, logs: List<String>) {
+fun MainContent(
+    modifier: Modifier = Modifier, 
+    devices: List<Device>, 
+    logs: List<String>,
+    selectedDeviceUid: String?,
+    onDeviceSelected: (String) -> Unit
+) {
     Column(modifier = modifier
         .fillMaxSize()
         // remove bottom padding so logs can reach the footer without an extra gap
         .padding(start = 16.dp, end = 16.dp, top = 16.dp, bottom = 0.dp)) {
         // Device selector (horizontal scroll)
-        DeviceSelector(devices = devices)
+        DeviceSelector(
+            devices = devices, 
+            selectedDeviceUid = selectedDeviceUid,
+            onDeviceSelected = onDeviceSelected
+        )
 
         Spacer(modifier = Modifier.height(6.dp))
 
@@ -451,38 +464,46 @@ fun MainContent(modifier: Modifier = Modifier, devices: List<Device>, logs: List
 }
 
 @Composable
-fun DeviceSelector(devices: List<Device>) {
+fun DeviceSelector(
+    devices: List<Device>,
+    selectedDeviceUid: String?,
+    onDeviceSelected: (String) -> Unit
+) {
     Column {
         LazyRow(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             items(devices) { d ->
-                DeviceCard(device = d)
+                DeviceCard(
+                    device = d, 
+                    isSelected = d.uid == selectedDeviceUid,
+                    onClick = { onDeviceSelected(d.uid) }
+                )
             }
         }
     }
 }
 
 @Composable
-fun DeviceCard(device: Device) {
+fun DeviceCard(device: Device, isSelected: Boolean, onClick: () -> Unit) {
     val colors = androidx.compose.material3.MaterialTheme.colorScheme
     val isOnline = device.status == "ONLINE"
     val isLinking = device.status == "LINKING"
     
-    // Increased alpha and more distinct colors for better contrast
+    // Selection feedback: color and border intensity
     val containerColor = when {
-        isOnline -> colors.primary.copy(alpha = 0.25f)    // Solid green tint
-        isLinking -> colors.tertiary.copy(alpha = 0.20f)  // Cyan tint
-        else -> colors.surfaceVariant.copy(alpha = 0.5f) // Gray
+        isOnline -> colors.primary.copy(alpha = 0.25f)
+        isLinking -> colors.tertiary.copy(alpha = 0.20f)
+        else -> colors.surfaceVariant.copy(alpha = 0.5f)
     }
     val borderColor = when {
-        isOnline -> colors.primary.copy(alpha = 0.8f)    // Bright green border
-        isLinking -> colors.tertiary.copy(alpha = 0.7f)   // Cyan border
+        isOnline -> colors.primary.copy(alpha = 0.8f)
+        isLinking -> colors.tertiary.copy(alpha = 0.7f)
         else -> colors.outline.copy(alpha = 0.3f)
     }
 
     Card(
         modifier = Modifier
             .width(192.dp)
-            .clickable { },
+            .clickable { onClick() },
         shape = RoundedCornerShape(12.dp),
         colors = CardDefaults.cardColors(containerColor = containerColor),
         elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
@@ -495,7 +516,7 @@ fun DeviceCard(device: Device) {
                     Text(
                         text = device.name, 
                         color = if (isOnline) colors.primary else colors.onSurface, 
-                        fontWeight = FontWeight.Bold,
+                        fontWeight = FontWeight.Bold, 
                         fontSize = 16.sp,
                         maxLines = 1,
                         overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
@@ -510,16 +531,22 @@ fun DeviceCard(device: Device) {
                     )
                 }
                 Spacer(modifier = Modifier.width(4.dp))
+                // status dot: solid when selected, hollow with border when not selected
+                val dotColor = when {
+                    isOnline -> colors.primary
+                    isLinking -> colors.tertiary
+                    else -> colors.outline
+                }
                 Box(modifier = Modifier
                     .size(10.dp)
-                    .background(
-                        when {
-                            isOnline -> colors.primary
-                            isLinking -> colors.tertiary
-                            else -> colors.outline
-                        },
-                        shape = RoundedCornerShape(10.dp)
-                    ))
+                    .then(
+                        if (isSelected) {
+                            Modifier.background(dotColor, shape = RoundedCornerShape(10.dp))
+                        } else {
+                            Modifier.border(1.dp, dotColor, shape = RoundedCornerShape(10.dp))
+                        }
+                    )
+                )
             }
 
             Spacer(modifier = Modifier.height(6.dp))
@@ -802,27 +829,4 @@ fun MainScreenPreview() {
         MainScreen()
     }
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 

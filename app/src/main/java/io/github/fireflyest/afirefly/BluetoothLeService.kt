@@ -28,6 +28,9 @@ class BluetoothLeService : Service() {
     private val _connectionState = MutableStateFlow(STATE_DISCONNECTED)
     val connectionState: StateFlow<Int> = _connectionState
 
+    private val _discoveredServices = MutableStateFlow<List<BluetoothGattService>>(emptyList())
+    val discoveredServices: StateFlow<List<BluetoothGattService>> = _discoveredServices
+
     private val _receivedData = MutableSharedFlow<ByteArray>(extraBufferCapacity = 64)
     val receivedData: SharedFlow<ByteArray> = _receivedData
 
@@ -83,6 +86,7 @@ class BluetoothLeService : Service() {
     private fun close() {
         bluetoothGatt?.close()
         bluetoothGatt = null
+        _discoveredServices.value = emptyList()
     }
 
     fun writeCharacteristic(characteristic: BluetoothGattCharacteristic, data: ByteArray) {
@@ -105,6 +109,7 @@ class BluetoothLeService : Service() {
                 Log.i(TAG, "Attempting to start service discovery: ${bluetoothGatt?.discoverServices()}")
             } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
                 _connectionState.value = STATE_DISCONNECTED
+                _discoveredServices.value = emptyList()
                 Log.i(TAG, "Disconnected from GATT server.")
             }
         }
@@ -112,6 +117,7 @@ class BluetoothLeService : Service() {
         override fun onServicesDiscovered(gatt: BluetoothGatt, status: Int) {
             if (status == BluetoothGatt.GATT_SUCCESS) {
                 Log.w(TAG, "onServicesDiscovered received: $status")
+                _discoveredServices.value = gatt.services ?: emptyList()
                 enableNotifications()
             } else {
                 Log.w(TAG, "onServicesDiscovered received: $status")
