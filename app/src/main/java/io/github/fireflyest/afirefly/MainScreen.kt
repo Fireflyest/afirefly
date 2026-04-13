@@ -8,7 +8,6 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.wrapContentHeight
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.heightIn
@@ -64,7 +63,6 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.material3.IconButton
 import androidx.compose.animation.Crossfade
-import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -160,6 +158,9 @@ fun SlimOutlinedTextField(
     shape: androidx.compose.foundation.shape.CornerBasedShape = RoundedCornerShape(8.dp),
     borderColor: Color,
     backgroundColor: Color
+    ,
+    // Optional callback to report measured TextLayoutResult so callers can react to wrapping
+    onTextLayout: (androidx.compose.ui.text.TextLayoutResult) -> Unit = {}
 ) {
     // Use a box whose vertical alignment depends on whether we should center the first line.
     // Center when singleLine or when there is no newline yet; switch to top-start after user
@@ -178,6 +179,7 @@ fun SlimOutlinedTextField(
             onValueChange = onValueChange,
             singleLine = singleLine,
             maxLines = maxLines,
+            onTextLayout = onTextLayout,
             textStyle = textStyle,
             cursorBrush = SolidColor(borderColor),
             // allow multi-line to wrap content; single-line will be vertically centered by
@@ -451,26 +453,27 @@ fun FooterBar() {
             )
         }
         // input directly adjacent to left button, matching height and straight shared edge
-        // compute animated target height based on number of lines (approx per-line height)
-        val lineCount = (if (inputText.isEmpty()) 1 else inputText.count { it == '\n' } + 1)
+        // measure wrapped line count from the text layout (so soft-wrapping increases height)
+        var measuredLines by remember { mutableStateOf(1) }
+        val lineCount = measuredLines.coerceAtLeast(1)
         val perLineDp = 20.dp
         val targetHeight = (44.dp + perLineDp * (lineCount - 1)).coerceAtMost(150.dp)
         val animHeight by animateDpAsState(targetHeight, animationSpec = tween(durationMillis = 220))
 
+        // Input area takes the remaining width. The clear icon will overlay the input (aligned)
+        // instead of reserving horizontal padding so the text field doesn't get squeezed.
         Box(modifier = Modifier
             .weight(1f)
             .height(animHeight)
             .padding(start = 0.dp, end = 4.dp)) {
-            // reduce end padding when clear icon is shown so text doesn't overlap
-            val innerPaddingEnd = if (inputText.isNotBlank()) 32.dp else 8.dp
             SlimOutlinedTextField(
                 value = inputText,
                 onValueChange = { inputText = it },
                 placeholder = { Text("ENTER COMMAND", color = colors.outline, fontSize = 14.sp) },
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(animHeight)
-                    .padding(end = innerPaddingEnd),
+                    .height(animHeight),
+                onTextLayout = { layout -> measuredLines = layout.lineCount },
                 // enable multi-line input so Enter creates new lines; allow up to 6 lines visually
                 singleLine = false,
                 minLines = 1,
@@ -481,14 +484,19 @@ fun FooterBar() {
                 backgroundColor = colors.surface
             )
 
-            // clear icon inside input when text present (animated)
-            androidx.compose.animation.AnimatedVisibility(visible = inputText.isNotBlank()) {
-                // align the clear icon to match text alignment: center for single-line, top for multi-line
-                val iconAlignment = if (lineCount == 1) Alignment.CenterEnd else Alignment.TopEnd
-                IconButton(onClick = { inputText = "" }, modifier = Modifier
-                    .align(iconAlignment)
-                    .padding(top = if (lineCount == 1) 0.dp else 8.dp)
-                    .size(28.dp)) {
+            // (clear icon moved outside as sibling) no overlay here to avoid duplicate icons
+        }
+
+        // clear icon placed to the left of the Send/Add button as a sibling.
+        // animate the sibling's width to 0 when hidden so it doesn't reserve space.
+        val clearTargetWidth = if (inputText.isNotBlank()) 36.dp else 0.dp
+        val clearWidth by animateDpAsState(targetValue = clearTargetWidth, animationSpec = tween(durationMillis = 180))
+        Box(modifier = Modifier
+            .width(clearWidth)
+            .height(animHeight)
+            .padding(horizontal = if (inputText.isNotBlank()) 4.dp else 0.dp), contentAlignment = Alignment.Center) {
+            if (inputText.isNotBlank()) {
+                IconButton(onClick = { inputText = "" }, modifier = Modifier.size(28.dp)) {
                     Icon(imageVector = Icons.Default.Close, contentDescription = "clear", tint = colors.outline)
                 }
             }
@@ -515,7 +523,7 @@ fun FooterBar() {
                         onClick = { /* TODO: send the command */ },
                         modifier = Modifier
                             .height(44.dp)
-                            .padding(end = 6.dp),
+                            .padding(end = 4.dp),
                         shape = RoundedCornerShape(8.dp),
                         colors = androidx.compose.material3.ButtonDefaults.buttonColors(
                             containerColor = colors.surfaceVariant,
