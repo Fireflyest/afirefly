@@ -86,7 +86,7 @@ class BluetoothLeService : Service() {
     private fun close() {
         bluetoothGatt?.close()
         bluetoothGatt = null
-        _discoveredServices.value = emptyList()
+        // Do not clear _discoveredServices here to avoid transient UI clearing
     }
 
     fun writeCharacteristic(characteristic: BluetoothGattCharacteristic, data: ByteArray) {
@@ -109,7 +109,7 @@ class BluetoothLeService : Service() {
                 Log.i(TAG, "Attempting to start service discovery: ${bluetoothGatt?.discoverServices()}")
             } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
                 _connectionState.value = STATE_DISCONNECTED
-                _discoveredServices.value = emptyList()
+                // Do not clear _discoveredServices here to avoid transient UI clearing
                 Log.i(TAG, "Disconnected from GATT server.")
             }
         }
@@ -117,7 +117,10 @@ class BluetoothLeService : Service() {
         override fun onServicesDiscovered(gatt: BluetoothGatt, status: Int) {
             if (status == BluetoothGatt.GATT_SUCCESS) {
                 Log.w(TAG, "onServicesDiscovered received: $status")
-                _discoveredServices.value = gatt.services ?: emptyList()
+                val services = gatt.services ?: emptyList()
+                if (services.isNotEmpty()) {
+                    _discoveredServices.value = services
+                }
                 enableNotifications()
             } else {
                 Log.w(TAG, "onServicesDiscovered received: $status")
