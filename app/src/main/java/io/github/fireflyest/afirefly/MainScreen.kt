@@ -1,6 +1,9 @@
 package io.github.fireflyest.afirefly
 
 import android.app.Activity
+import android.content.ComponentName
+import android.content.ServiceConnection
+import android.os.IBinder
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
@@ -54,6 +57,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.LocalContext
@@ -69,6 +73,8 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.animation.animateContentSize
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
  
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.navigationBarsPadding
@@ -90,10 +96,12 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
- 
-import io.github.fireflyest.afirefly.ui.theme.AfOutline
-import io.github.fireflyest.afirefly.ui.theme.AfPrimary
+
 import io.github.fireflyest.afirefly.ui.theme.AfireflyTheme
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+import kotlinx.coroutines.flow.MutableStateFlow
 
 @Composable
 fun MainScreen() {
@@ -104,18 +112,71 @@ fun MainScreen() {
     val ctx = LocalContext.current
     val isDark = isSystemInDarkTheme()
     val devices = remember {
-        mutableStateListOf<Device>().apply { addAll(sampleDevices()) }
+        mutableStateListOf<Device>()
+    }
+
+    var bluetoothService by remember { mutableStateOf<BluetoothLeService?>(null) }
+    val logs = remember { mutableStateListOf<String>() }
+
+    val connection = remember {
+        object : ServiceConnection {
+            override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
+                val binder = service as BluetoothLeService.LocalBinder
+                bluetoothService = binder.getService()
+                bluetoothService?.initialize()
+            }
+
+            override fun onServiceDisconnected(name: ComponentName?) {
+                bluetoothService = null
+            }
+        }
+    }
+
+    LaunchedEffect(Unit) {
+        val intent = Intent(ctx, BluetoothLeService::class.java)
+        ctx.bindService(intent, connection, android.content.Context.BIND_AUTO_CREATE)
+    }
+
+    val serviceState by (bluetoothService?.connectionState ?: MutableStateFlow(BluetoothLeService.STATE_DISCONNECTED)).collectAsState()
+
+    LaunchedEffect(bluetoothService) {
+        bluetoothService?.receivedData?.collect { data ->
+            val timestamp = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date())
+            val hexString = data.joinToString("") { "%02X ".format(it) }
+            logs.add("$timestamp RECV: $hexString")
+        }
     }
 
     val scanLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
         if (result.resultCode == Activity.RESULT_OK) {
             val info = result.data?.toConnectedDeviceInfo() ?: return@rememberLauncherForActivityResult
             val newDevice = info.toMainDevice()
+            
+            val timestamp = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date())
+            logs.add("$timestamp INFO: Device discovered: ${newDevice.name} [${newDevice.uid}]")
+
             val idx = devices.indexOfFirst { it.uid == newDevice.uid }
             if (idx >= 0) {
                 devices[idx] = newDevice
             } else {
                 devices.add(0, newDevice)
+            }
+            // Automatically connect to the scanned device
+            bluetoothService?.connect(newDevice.uid)
+        }
+    }
+
+    // Update device status based on Bluetooth service state
+    LaunchedEffect(serviceState) {
+        if (serviceState == BluetoothLeService.STATE_CONNECTED) {
+            val timestamp = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date())
+            logs.add("$timestamp INFO: GATT connection established.")
+            // Find and update the device status in the list
+            // For now, let's assume the last device added or just update all that match "LINKING"
+            devices.forEachIndexed { index, device ->
+                if (device.status == "LINKING") {
+                    devices[index] = device.copy(status = "ONLINE")
+                }
             }
         }
     }
@@ -160,9 +221,16 @@ fun MainScreen() {
             }) {
 
             Column(modifier = Modifier.fillMaxSize()) {
-                TopHeader(onOpenScan = { scanLauncher.launch(Intent(ctx, ScanActivity::class.java)) })
-                MainContent(modifier = Modifier.weight(1f), devices = devices)
-                FooterBar()
+                TopHeader(
+                    onOpenScan = { scanLauncher.launch(Intent(ctx, ScanActivity::class.java)) },
+                    bluetoothService = bluetoothService
+                )
+                MainContent(modifier = Modifier.weight(1f), devices = devices, logs = logs)
+                FooterBar(onSendMessage = { msg ->
+                    bluetoothService?.sendData(msg)
+                    val timestamp = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date())
+                    logs.add("$timestamp SEND: $msg")
+                })
             }
         }
     }
@@ -244,12 +312,20 @@ fun SlimOutlinedTextField(
 }
 
 @Composable
-fun TopHeader(onOpenScan: () -> Unit) {
+fun TopHeader(onOpenScan: () -> Unit, bluetoothService: BluetoothLeService?) {
     val colors = androidx.compose.material3.MaterialTheme.colorScheme
     // Collapsible capsule search: shows a small pill with icon+label, expands to full search field on tap
     var expanded by remember { mutableStateOf(false) }
     val focusRequester = remember { FocusRequester() }
 
+    // Dropdown states for Service and Characteristic
+    var serviceExpanded by remember { mutableStateOf(false) }
+    var charExpanded by remember { mutableStateOf(false) }
+    
+    // We observe the available services from the bluetooth service
+    // For now we use the connected device's services if available
+    val services = emptyList<String>() // Placeholder for actual GATT services
+    val characteristics = emptyList<String>() // Placeholder for selected service's chars
 
     Row(modifier = Modifier
         .statusBarsPadding()
@@ -279,7 +355,7 @@ fun TopHeader(onOpenScan: () -> Unit) {
                 SlimOutlinedTextField(
                     value = searchText,
                     onValueChange = { searchText = it },
-                    placeholder = { Text("FILTER_LOGS_BY_UUID...", color = colors.onSurface.copy(alpha = 0.6f), fontFamily = FontFamily.Monospace, fontSize = 13.sp) },
+                    placeholder = { Text("FILTER...", color = colors.onSurface.copy(alpha = 0.6f), fontFamily = FontFamily.Monospace, fontSize = 13.sp) },
                     modifier = Modifier
                         .fillMaxWidth()
                         .height(40.dp)
@@ -294,9 +370,61 @@ fun TopHeader(onOpenScan: () -> Unit) {
             }
         }
 
-        Spacer(modifier = Modifier.width(12.dp))
+        Spacer(modifier = Modifier.width(8.dp))
+
+        // Service Dropdown
+        Box {
+            TextButton(
+                onClick = { serviceExpanded = true },
+                modifier = Modifier.height(40.dp).width(56.dp),
+                shape = RoundedCornerShape(20.dp),
+                colors = androidx.compose.material3.ButtonDefaults.textButtonColors(
+                    containerColor = colors.surfaceVariant,
+                    contentColor = colors.primary
+                ),
+                contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp)
+            ) {
+                Text("SRV", fontSize = 13.sp, fontFamily = FontFamily.Monospace)
+            }
+            DropdownMenu(expanded = serviceExpanded, onDismissRequest = { serviceExpanded = false }) {
+                if (services.isEmpty()) {
+                    DropdownMenuItem(text = { Text("No Services", fontSize = 12.sp) }, onClick = { serviceExpanded = false })
+                }
+                services.forEach { srv ->
+                    DropdownMenuItem(text = { Text(srv, fontSize = 12.sp) }, onClick = { serviceExpanded = false })
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.width(4.dp))
+
+        // Characteristic Dropdown
+        Box {
+            TextButton(
+                onClick = { charExpanded = true },
+                modifier = Modifier.height(40.dp).width(56.dp),
+                shape = RoundedCornerShape(20.dp),
+                colors = androidx.compose.material3.ButtonDefaults.textButtonColors(
+                    containerColor = colors.surfaceVariant,
+                    contentColor = colors.primary
+                ),
+                contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp)
+            ) {
+                Text("CHR", fontSize = 13.sp, fontFamily = FontFamily.Monospace)
+            }
+            DropdownMenu(expanded = charExpanded, onDismissRequest = { charExpanded = false }) {
+                if (characteristics.isEmpty()) {
+                    DropdownMenuItem(text = { Text("No Characteristics", fontSize = 12.sp) }, onClick = { charExpanded = false })
+                }
+                characteristics.forEach { chr ->
+                    DropdownMenuItem(text = { Text(chr, fontSize = 12.sp) }, onClick = { charExpanded = false })
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.width(8.dp))
         // make bluetooth icon open ScanActivity when tapped
-        IconButton(onClick = onOpenScan) {
+        IconButton(onClick = onOpenScan, modifier = Modifier.size(40.dp)) {
             Icon(
                 imageVector = Icons.Default.Bluetooth,
                 contentDescription = "bt",
@@ -307,7 +435,7 @@ fun TopHeader(onOpenScan: () -> Unit) {
 }
 
 @Composable
-fun MainContent(modifier: Modifier = Modifier, devices: List<Device>) {
+fun MainContent(modifier: Modifier = Modifier, devices: List<Device>, logs: List<String>) {
     Column(modifier = modifier
         .fillMaxSize()
         // remove bottom padding so logs can reach the footer without an extra gap
@@ -318,21 +446,13 @@ fun MainContent(modifier: Modifier = Modifier, devices: List<Device>) {
         Spacer(modifier = Modifier.height(6.dp))
 
         // Terminal area (header + log + footer info)
-        TerminalView(modifier = Modifier.weight(1f))
+        TerminalView(modifier = Modifier.weight(1f), logs = logs)
     }
 }
 
 @Composable
 fun DeviceSelector(devices: List<Device>) {
     Column {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Box(modifier = Modifier
-                .size(8.dp)
-                .background(AfPrimary, shape = RoundedCornerShape(8.dp)))
-            Spacer(modifier = Modifier.width(8.dp))
-            Text(text = "Active_Nodes", color = AfOutline, fontFamily = FontFamily.Monospace, fontSize = 12.sp)
-        }
-        Spacer(modifier = Modifier.height(8.dp))
         LazyRow(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             items(devices) { d ->
                 DeviceCard(device = d)
@@ -346,15 +466,17 @@ fun DeviceCard(device: Device) {
     val colors = androidx.compose.material3.MaterialTheme.colorScheme
     val isOnline = device.status == "ONLINE"
     val isLinking = device.status == "LINKING"
+    
+    // Increased alpha and more distinct colors for better contrast
     val containerColor = when {
-        isOnline -> colors.primary.copy(alpha = 0.10f)
-        isLinking -> colors.tertiary.copy(alpha = 0.10f)
-        else -> colors.surfaceVariant
+        isOnline -> colors.primary.copy(alpha = 0.25f)    // Solid green tint
+        isLinking -> colors.tertiary.copy(alpha = 0.20f)  // Cyan tint
+        else -> colors.surfaceVariant.copy(alpha = 0.5f) // Gray
     }
     val borderColor = when {
-        isOnline -> colors.primary.copy(alpha = 0.35f)
-        isLinking -> colors.tertiary.copy(alpha = 0.35f)
-        else -> colors.surfaceVariant
+        isOnline -> colors.primary.copy(alpha = 0.8f)    // Bright green border
+        isLinking -> colors.tertiary.copy(alpha = 0.7f)   // Cyan border
+        else -> colors.outline.copy(alpha = 0.3f)
     }
 
     Card(
@@ -369,10 +491,25 @@ fun DeviceCard(device: Device) {
             .border(1.dp, borderColor, shape = RoundedCornerShape(12.dp))
             .padding(horizontal = 8.dp, vertical = 8.dp)) {
             Row(horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.Top, modifier = Modifier.fillMaxWidth()) {
-                Column {
-                    Text(text = device.name, color = colors.onSurface, fontWeight = FontWeight.Bold, fontSize = 16.sp)
-                    Text(text = device.uid, color = colors.outline, fontFamily = FontFamily.Monospace, fontSize = 11.sp)
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = device.name, 
+                        color = if (isOnline) colors.primary else colors.onSurface, 
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 16.sp,
+                        maxLines = 1,
+                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+                    )
+                    Text(
+                        text = device.uid, 
+                        color = colors.outline, 
+                        fontFamily = FontFamily.Monospace, 
+                        fontSize = 11.sp,
+                        maxLines = 1,
+                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+                    )
                 }
+                Spacer(modifier = Modifier.width(4.dp))
                 Box(modifier = Modifier
                     .size(10.dp)
                     .background(
@@ -416,7 +553,7 @@ fun DeviceCard(device: Device) {
 }
 
 @Composable
-fun TerminalView(modifier: Modifier = Modifier) {
+fun TerminalView(modifier: Modifier = Modifier, logs: List<String>) {
     val colors = androidx.compose.material3.MaterialTheme.colorScheme
     Column(modifier = modifier.fillMaxSize()) {
         // logs area
@@ -424,7 +561,7 @@ fun TerminalView(modifier: Modifier = Modifier) {
             .weight(1f)
             .background(colors.surface)
             .padding(vertical = 0.dp, horizontal = 0.dp)) {
-            items(sampleLogs()) { entry ->
+            items(logs) { entry ->
                 LogRow(entry)
                 Spacer(modifier = Modifier.height(4.dp))
             }
@@ -492,7 +629,7 @@ fun LogRow(text: String) {
 
 @Composable
 @OptIn(ExperimentalMaterial3Api::class)
-fun FooterBar() {
+fun FooterBar(onSendMessage: (String) -> Unit = {}) {
     val colors = androidx.compose.material3.MaterialTheme.colorScheme
     Row(modifier = Modifier
         .navigationBarsPadding()
@@ -598,7 +735,10 @@ fun FooterBar() {
                     }
                 } else {
                     Button(
-                        onClick = { /* TODO: send the command */ },
+                        onClick = {
+                            onSendMessage(inputText)
+                            inputText = ""
+                        },
                         modifier = Modifier
                             .height(44.dp)
                             .padding(end = 4.dp),
@@ -650,29 +790,10 @@ data class Device(
 )
 
 fun sampleDevices(): List<Device> {
-    val listOf = listOf(
-        Device("Alpha-1", "STABLE", "001", "ONLINE", "85%", "94%", locked = false, gps = true),
-        Device("Beta-2", "LINKING", "002", "LINKING", "40%", "48%", locked = true, gps = false),
-        Device("Gamma-9", "OFFLINE", "003", "OFFLINE", "--", "--", locked = true, gps = false)
-    )
-    return listOf
+    return emptyList()
 }
 
-fun sampleLogs(): List<String> = listOf(
-    "14:02:31 SYSTEM_BOOT: Initializing Mona Protocol v4.2.0...",
-    "14:02:32 KERN: ARM-64 Architecture detected.",
-    "14:02:33 NET: Bluetooth handshake with Alpha-1 successful.",
-    "14:02:35 TELEMETRY: Altitude: 42.1m | Pitch: 2.1° | Roll: 0.0°",
-    "14:02:45 WARN: Proximity sensor (Rear) blocked by debris.",
-    "14:03:02 >> Listening for user input... _",
-    "14:03:05 DIAG: Battery health 94% | Voltage 15.2V",
-    "14:03:10 NET: RSSI -45dBm | LATENCY 12.4ms",
-    "14:03:12 TELEMETRY: GPS Lock 12 satellites",
-    "14:03:15 CMD_EXEC: Running 'mona --diagnostic'",
-    "14:03:18 DIAG: Rotors 1-4 functional status: OK",
-    "14:03:21 INFO: Writing flight log to sector 0x7F2",
-    "14:03:25 ALERT: Temp spike detected: 42C"
-)
+fun sampleLogs(): List<String> = emptyList()
 
 @Preview(showBackground = true, widthDp = 480, heightDp = 1080)
 @Composable
@@ -681,4 +802,27 @@ fun MainScreenPreview() {
         MainScreen()
     }
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
