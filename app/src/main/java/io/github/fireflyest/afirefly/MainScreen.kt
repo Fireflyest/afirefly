@@ -329,7 +329,7 @@ fun DeviceCard(device: Device) {
         .clickable { }, shape = RoundedCornerShape(12.dp), elevation = androidx.compose.material3.CardDefaults.cardElevation(defaultElevation = 0.dp)) {
         Column(modifier = Modifier
             .background(colors.surfaceVariant)
-            .padding(12.dp)) {
+            .padding(horizontal = 12.dp, vertical = 8.dp)) {
             Row(horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.Top, modifier = Modifier.fillMaxWidth()) {
                 Column {
                     Text(text = device.name, color = colors.onSurface, fontWeight = FontWeight.Bold, fontSize = 16.sp)
@@ -343,10 +343,10 @@ fun DeviceCard(device: Device) {
                 }
             }
 
-            Spacer(modifier = Modifier.height(8.dp))
+            Spacer(modifier = Modifier.height(6.dp))
 
             // icons row: lock, battery, signal, gps (grouped with consistent spacing)
-                Row(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
                 // lock/unlock group
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     val lockIcon = if (device.locked) Icons.Default.Lock else Icons.Default.LockOpen

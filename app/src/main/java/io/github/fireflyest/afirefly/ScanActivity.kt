@@ -12,7 +12,7 @@ import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.shape.CircleShape
+// ...existing imports...
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -34,10 +34,36 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.ui.graphics.Brush
-import androidx.compose.ui.graphics.graphicsLayer
+// ...existing imports...
+import android.annotation.SuppressLint
+import android.content.pm.PackageManager
+import android.Manifest
+import android.bluetooth.BluetoothAdapter
+import android.bluetooth.BluetoothManager
+import android.bluetooth.le.BluetoothLeScanner
+import android.bluetooth.le.ScanCallback
+import android.bluetooth.le.ScanResult
+import android.bluetooth.le.ScanSettings
+import android.os.Build
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.SideEffect
+import androidx.compose.ui.platform.LocalView
+import androidx.compose.foundation.isSystemInDarkTheme
+import com.google.accompanist.systemuicontroller.rememberSystemUiController
+import kotlinx.coroutines.delay
+import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.DisposableEffect
+import androidx.core.content.ContextCompat
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
@@ -47,6 +73,13 @@ import androidx.compose.ui.tooling.preview.Preview
 import io.github.fireflyest.afirefly.ui.theme.AfireflyTheme
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.filled.SignalCellular4Bar
+
+data class ScannedDevice(
+    val name: String?,
+    val address: String,
+    var rssi: Int
+)
 
 
 class ScanActivity : ComponentActivity() {
@@ -63,6 +96,7 @@ class ScanActivity : ComponentActivity() {
     }
 }
 
+@SuppressLint("MissingPermission")
 @Composable
 fun ScanScreen(modifier: Modifier = Modifier) {
     // Use nullable activity for preview safety
@@ -72,7 +106,151 @@ fun ScanScreen(modifier: Modifier = Modifier) {
     val colors = androidx.compose.material3.MaterialTheme.colorScheme
     // pulse used visually in title; handled below with a local transition
 
+    // scanned devices state
+    val scannedDevices = remember { mutableStateListOf<ScannedDevice>() }
+    val isScanning = rememberSaveable { mutableStateOf(false) }
+    // no coroutine scope needed here
+
+    // Bluetooth adapter and scanner (nullable for previews)
+    val btManager = (ctx.getSystemService(android.content.Context.BLUETOOTH_SERVICE) as? BluetoothManager)
+    val btAdapter = btManager?.adapter
+    val btScanner: BluetoothLeScanner? = btAdapter?.bluetoothLeScanner
+
+    // Permission handling
+    val permissions = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+        arrayOf(Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_CONNECT, Manifest.permission.ACCESS_FINE_LOCATION)
+    } else {
+        arrayOf(Manifest.permission.ACCESS_FINE_LOCATION)
+    }
+
+    // permission launcher + flag
+    val permissionGranted = remember { mutableStateOf(false) }
+    val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { result ->
+        permissionGranted.value = result.entries.all { it.value }
+    }
+
+    // Scan callback (declared before start/stop helpers so lambdas can reference it)
+    val scanCallback = remember {
+        object : ScanCallback() {
+            override fun onScanResult(callbackType: Int, result: ScanResult) {
+                val d = result.device
+                val addr = d.address ?: return
+                val name = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
+                    ContextCompat.checkSelfPermission(ctx, Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) {
+                    result.scanRecord?.deviceName
+                } else {
+                    d.name ?: result.scanRecord?.deviceName
+                }
+                // ignore devices without a discoverable name (per request)
+                if (name.isNullOrBlank()) return
+                val rssi = result.rssi
+                val idx = scannedDevices.indexOfFirst { it.address == addr }
+                if (idx >= 0) {
+                    scannedDevices[idx].rssi = rssi
+                } else {
+                    scannedDevices.add(ScannedDevice(name, addr, rssi))
+                }
+            }
+        }
+    }
+
+    // helper to start/stop scanning
+    val startScanAction: () -> Unit = {
+        btScanner?.let { scanner ->
+            val settings = ScanSettings.Builder().setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY).build()
+            try {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
+                    ContextCompat.checkSelfPermission(ctx, Manifest.permission.BLUETOOTH_SCAN) != PackageManager.PERMISSION_GRANTED) {
+                    // missing permission, request
+                    permissionLauncher.launch(permissions)
+                    return@let
+                }
+                scanner.startScan(null, settings, scanCallback)
+                isScanning.value = true
+            } catch (e: SecurityException) {
+                // request permissions
+                permissionLauncher.launch(permissions)
+            }
+        }
+    }
+
+    val stopScanAction: () -> Unit = {
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
+                ContextCompat.checkSelfPermission(ctx, Manifest.permission.BLUETOOTH_SCAN) != PackageManager.PERMISSION_GRANTED) {
+                // nothing
+            } else {
+                btScanner?.stopScan(scanCallback)
+            }
+        } catch (_: Exception) {}
+        isScanning.value = false
+    }
+
+    // request enable bluetooth if disabled
+    val enableBtLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { _ ->
+        if (btAdapter?.isEnabled == true) {
+            startScanAction()
+        }
+    }
+
+    
+
+    // request permissions on enter and start scanning automatically
+    LaunchedEffect(Unit) {
+        // if permissions already granted, proceed
+        val missing = permissions.any { p -> ContextCompat.checkSelfPermission(ctx, p) != PackageManager.PERMISSION_GRANTED }
+        if (missing) {
+            permissionLauncher.launch(permissions)
+        } else {
+            // ensure bluetooth enabled
+            if (btAdapter != null && !btAdapter.isEnabled) {
+                val enableIntent = android.content.Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE)
+                enableBtLauncher.launch(enableIntent)
+            } else {
+                startScanAction()
+            }
+        }
+    }
+
+    // when permission result arrives, start scanning (or request enable if disabled)
+    LaunchedEffect(permissionGranted.value) {
+        if (permissionGranted.value) {
+            if (btAdapter != null && !btAdapter.isEnabled) {
+                val enableIntent = android.content.Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE)
+                enableBtLauncher.launch(enableIntent)
+            } else {
+                startScanAction()
+            }
+        }
+    }
+
+    // auto-stop scanning after 10 seconds when started
+    LaunchedEffect(isScanning.value) {
+        if (isScanning.value) {
+            delay(10_000L)
+            // ensure we stop scanning after the timeout
+            stopScanAction()
+        }
+    }
+
+    // stop scanning when composable leaves
+    DisposableEffect(Unit) {
+        onDispose {
+            stopScanAction()
+        }
+    }
+
     Box(modifier = modifier.fillMaxSize()) {
+        // set system bars to match the surface so header/footer feel immersive
+        val view = LocalView.current
+        val isDark = isSystemInDarkTheme()
+        if (!view.isInEditMode) {
+            val systemUiController = rememberSystemUiController()
+            SideEffect {
+                systemUiController.setStatusBarColor(color = colors.surface, darkIcons = !isDark)
+                systemUiController.setNavigationBarColor(color = colors.surface.copy(alpha = 0.9f), darkIcons = !isDark)
+            }
+        }
         Column(modifier = Modifier.fillMaxSize()) {
             // TopAppBar: match HTML: fixed height (h-20 ~ 80dp), translucent background
             Row(
@@ -91,7 +269,8 @@ fun ScanScreen(modifier: Modifier = Modifier) {
                     }
                     Column {
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text(text = "Scanning", style = androidx.compose.material3.MaterialTheme.typography.titleLarge, color = colors.onSurface)
+                            val titleText = if (isScanning.value) "Scanning" else "Scanner"
+                            Text(text = titleText, style = androidx.compose.material3.MaterialTheme.typography.titleLarge, color = colors.onSurface)
                         }
                     }
                 }
@@ -109,26 +288,28 @@ fun ScanScreen(modifier: Modifier = Modifier) {
                         // outer rings
                         drawCircle(colors.primary.copy(alpha = 0.2f), radius = radius, center = androidx.compose.ui.geometry.Offset(cx, cy), style = androidx.compose.ui.graphics.drawscope.Stroke(width = 1.dp.toPx()))
                         drawCircle(colors.primary.copy(alpha = 0.1f), radius = radius - 4.dp.toPx(), center = androidx.compose.ui.geometry.Offset(cx, cy), style = androidx.compose.ui.graphics.drawscope.Stroke(width = 1.dp.toPx()))
-                        // sweeping sector: drawArc with rotating startAngle
-                        drawArc(
-                            brush = Brush.radialGradient(listOf(colors.primary.copy(alpha = 0.28f), Color.Transparent), center = androidx.compose.ui.geometry.Offset(cx, cy), radius = radius * 1.2f),
-                            startAngle = angle - 30f,
-                            sweepAngle = 60f,
-                            useCenter = true,
-                            topLeft = androidx.compose.ui.geometry.Offset(cx - radius, cy - radius),
-                            size = androidx.compose.ui.geometry.Size(radius * 2f, radius * 2f)
-                        )
+                        // sweeping sector: only when actively scanning
+                        if (isScanning.value) {
+                            drawArc(
+                                brush = Brush.radialGradient(listOf(colors.primary.copy(alpha = 0.28f), Color.Transparent), center = androidx.compose.ui.geometry.Offset(cx, cy), radius = radius * 1.2f),
+                                startAngle = angle - 30f,
+                                sweepAngle = 60f,
+                                useCenter = true,
+                                topLeft = androidx.compose.ui.geometry.Offset(cx - radius, cy - radius),
+                                size = androidx.compose.ui.geometry.Size(radius * 2f, radius * 2f)
+                            )
+                        }
                         // center dot
                         drawCircle(colors.primary, radius = 3.dp.toPx(), center = androidx.compose.ui.geometry.Offset(cx, cy))
                     }
 
-                    // nodes badge
+                    // nodes badge (dynamic)
                     Box(modifier = Modifier
                         .background(colors.surfaceVariant.copy(alpha = 0.2f), shape = RoundedCornerShape(20.dp))
                         .border(1.dp, colors.surfaceVariant.copy(alpha = 0.3f), shape = RoundedCornerShape(20.dp))
                         .padding(horizontal = 12.dp, vertical = 8.dp)) {
                         Row(verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                            Column { Text(text = "07", style = androidx.compose.material3.MaterialTheme.typography.titleMedium, color = colors.primary); }
+                            Column { Text(text = scannedDevices.size.toString(), style = androidx.compose.material3.MaterialTheme.typography.titleMedium, color = colors.primary); }
                             Column { Text(text = "Nodes", style = androidx.compose.material3.MaterialTheme.typography.labelSmall, color = colors.onSurface.copy(alpha = 0.7f)) }
                         }
                     }
@@ -138,42 +319,76 @@ fun ScanScreen(modifier: Modifier = Modifier) {
             // (Removed hero title block to match requested layout)
             Spacer(modifier = Modifier.height(8.dp))
 
+            // small spacer between header and list
+            Spacer(modifier = Modifier.height(4.dp))
+
             // device list
             LazyColumn(modifier = Modifier
                 .fillMaxSize()
                 .padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                items(sampleDevices()) { device ->
-                    // replicate card style from HTML
+                items(scannedDevices) { device ->
+                    // replicate card style from HTML for scanned devices
                     Box(modifier = Modifier
                         .fillMaxWidth()
                         .background(colors.surface.copy(alpha = 0.08f), shape = RoundedCornerShape(12.dp))
                         .border(1.dp, colors.surfaceVariant.copy(alpha = 0.2f), shape = RoundedCornerShape(12.dp))
                         .padding(12.dp)) {
                         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                            // Left area: icon + name/address. Give it weight so the right controls keep fixed space
+                            Row(modifier = Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                                 Box(modifier = Modifier.size(40.dp).background(colors.surfaceVariant.copy(alpha = 0.3f), shape = RoundedCornerShape(8.dp)), contentAlignment = Alignment.Center) {
-                                    // placeholder icon (use text glyphs for now)
+                                    // placeholder icon
                                     Text(text = "🔊")
                                 }
-                                Column {
-                                    Text(text = device.name, color = colors.onSurface, style = androidx.compose.material3.MaterialTheme.typography.titleMedium)
-                                    Text(text = device.uid, color = colors.onSurface.copy(alpha = 0.6f), style = androidx.compose.material3.MaterialTheme.typography.bodySmall)
+                                // Make the text column take remaining space and ellipsize long names so the right-side controls
+                                // (signal + Connect) keep their fixed width and are not pushed out.
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = device.name ?: "Unknown Device",
+                                        color = colors.onSurface,
+                                        style = androidx.compose.material3.MaterialTheme.typography.titleMedium,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                    Text(
+                                        text = device.address,
+                                        color = colors.onSurface.copy(alpha = 0.6f),
+                                        style = androidx.compose.material3.MaterialTheme.typography.bodySmall,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
                                 }
                             }
 
-                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                                // signal bars
-                                Row(verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                                    Box(modifier = Modifier.width(4.dp).height(8.dp).background(if (device.signal.contains("-%")) colors.surfaceVariant else colors.primary, shape = RoundedCornerShape(2.dp)))
-                                    Box(modifier = Modifier.width(4.dp).height(12.dp).background(colors.primary, shape = RoundedCornerShape(2.dp)))
-                                    Box(modifier = Modifier.width(4.dp).height(14.dp).background(colors.primary, shape = RoundedCornerShape(2.dp)))
-                                    Box(modifier = Modifier.width(4.dp).height(16.dp).background(colors.primary, shape = RoundedCornerShape(2.dp)))
+                            // right-side controls: compact signal bars + Connect with reduced spacing
+                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                // compute strength from RSSI and render compact bars (no RSSI text)
+                                val strength = when {
+                                    device.rssi >= -60 -> 4
+                                    device.rssi >= -75 -> 3
+                                    device.rssi >= -90 -> 2
+                                    device.rssi >= -105 -> 1
+                                    else -> 0
                                 }
-                                // glass Connect button
+                                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp), modifier = Modifier.width(18.dp)) {
+                                    // four vertical bars with increasing height (narrower bars)
+                                    val heights = listOf(6.dp, 10.dp, 14.dp, 18.dp)
+                                    Row(horizontalArrangement = Arrangement.spacedBy(2.dp), verticalAlignment = Alignment.Bottom) {
+                                        heights.forEachIndexed { i, h ->
+                                            val filled = i < strength
+                                            Box(modifier = Modifier
+                                                .width(2.dp)
+                                                .height(h)
+                                                .background(if (filled) colors.primary else colors.surfaceVariant, shape = RoundedCornerShape(2.dp)))
+                                        }
+                                    }
+                                }
+                                // glass Connect button with stable (reduced) width so it's not pushed out
                                 Box(modifier = Modifier
+                                    .width(82.dp)
                                     .background(AfPrimary.copy(alpha = 0.05f), shape = RoundedCornerShape(10.dp))
                                     .border(1.dp, AfPrimary.copy(alpha = 0.2f), shape = RoundedCornerShape(10.dp))
-                                    .padding(horizontal = 16.dp, vertical = 8.dp)) {
+                                    .padding(horizontal = 12.dp, vertical = 8.dp), contentAlignment = Alignment.Center) {
                                     Text(text = "Connect", color = AfPrimary, style = androidx.compose.material3.MaterialTheme.typography.bodySmall)
                                 }
                             }
@@ -219,5 +434,118 @@ fun DeviceRow(device: Device) {
 @Preview(showBackground = true)
 @Composable
 fun ScanPreview() {
-    AfireflyTheme { ScanScreen() }
+    AfireflyTheme { ScanScreenPreviewContent() }
+}
+
+// Lightweight preview-only UI that doesn't request permissions or access Bluetooth.
+// Keeps the preview working in Android Studio by rendering the same layout with
+// sample data instead of running runtime scanning logic.
+@Composable
+fun ScanScreenPreviewContent() {
+    val colors = androidx.compose.material3.MaterialTheme.colorScheme
+    val sample = listOf(
+        ScannedDevice("Mona-Audio-X1", "00:1A:2B:3C:4D:5E", -42),
+        ScannedDevice("Architect-Pro", "B4:F2:35:91:0A:CC", -72),
+        ScannedDevice("Mona Watch 4", "FE:88:21:44:BC:90", -88)
+    )
+
+    Box(modifier = Modifier.fillMaxSize()) {
+        Column(modifier = Modifier.fillMaxSize()) {
+            // Header (static for preview)
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(colors.surface.copy(alpha = 0.4f))
+                    .height(80.dp)
+                    .padding(horizontal = 20.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    IconButton(onClick = {}) {
+                        Icon(imageVector = Icons.Default.ArrowBack, contentDescription = "back", tint = colors.onSurface)
+                    }
+                    Column {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(text = "Scanning", style = androidx.compose.material3.MaterialTheme.typography.titleLarge, color = colors.onSurface)
+                        }
+                    }
+                }
+
+                // nodes badge
+                Box(modifier = Modifier
+                    .background(colors.surfaceVariant.copy(alpha = 0.2f), shape = RoundedCornerShape(20.dp))
+                    .border(1.dp, colors.surfaceVariant.copy(alpha = 0.3f), shape = RoundedCornerShape(20.dp))
+                    .padding(horizontal = 12.dp, vertical = 8.dp)) {
+                    Row(verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Column { Text(text = sample.size.toString(), style = androidx.compose.material3.MaterialTheme.typography.titleMedium, color = colors.primary); }
+                        Column { Text(text = "Nodes", style = androidx.compose.material3.MaterialTheme.typography.labelSmall, color = colors.onSurface.copy(alpha = 0.7f)) }
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            // device list (sample)
+            LazyColumn(modifier = Modifier
+                .fillMaxSize()
+                .padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                items(sample) { device ->
+                    Box(modifier = Modifier
+                        .fillMaxWidth()
+                        .background(colors.surface.copy(alpha = 0.08f), shape = RoundedCornerShape(12.dp))
+                        .border(1.dp, colors.surfaceVariant.copy(alpha = 0.2f), shape = RoundedCornerShape(12.dp))
+                        .padding(12.dp)) {
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                            Row(modifier = Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                                Box(modifier = Modifier.size(40.dp).background(colors.surfaceVariant.copy(alpha = 0.3f), shape = RoundedCornerShape(8.dp)), contentAlignment = Alignment.Center) {
+                                    Text(text = "🔊")
+                                }
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = device.name ?: "Unknown Device",
+                                        color = colors.onSurface,
+                                        style = androidx.compose.material3.MaterialTheme.typography.titleMedium,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                    Text(
+                                        text = device.address,
+                                        color = colors.onSurface.copy(alpha = 0.6f),
+                                        style = androidx.compose.material3.MaterialTheme.typography.bodySmall,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+                            }
+
+                            // right-side compact controls
+                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                // simple static bars for preview (all full)
+                                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(2.dp), modifier = Modifier.width(20.dp)) {
+                                    val heights = listOf(6.dp, 10.dp, 14.dp, 18.dp)
+                                    Row(horizontalArrangement = Arrangement.spacedBy(2.dp), verticalAlignment = Alignment.Bottom) {
+                                        heights.forEach { h ->
+                                            Box(modifier = Modifier
+                                                .width(2.dp)
+                                                .height(h)
+                                                .background(colors.primary, shape = RoundedCornerShape(2.dp)))
+                                        }
+                                    }
+                                }
+                                Box(modifier = Modifier
+                                    .width(64.dp)
+                                    .background(AfPrimary.copy(alpha = 0.05f), shape = RoundedCornerShape(10.dp))
+                                    .border(1.dp, AfPrimary.copy(alpha = 0.2f), shape = RoundedCornerShape(10.dp))
+                                    .padding(horizontal = 8.dp, vertical = 6.dp), contentAlignment = Alignment.Center) {
+                                    Text(text = "Connect", color = AfPrimary, style = androidx.compose.material3.MaterialTheme.typography.bodySmall)
+                                }
+                            }
+                        }
+                    }
+                }
+                item { Spacer(modifier = Modifier.size(120.dp)) }
+            }
+        }
+    }
 }
