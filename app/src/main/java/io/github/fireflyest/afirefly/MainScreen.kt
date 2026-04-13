@@ -94,6 +94,9 @@ fun MainScreen() {
 
     val serviceState by (bluetoothService?.connectionState ?: MutableStateFlow(BluetoothLeService.STATE_DISCONNECTED)).collectAsState()
 
+    // Track previous state to avoid redundant logs on startup
+    var previousServiceState by remember { mutableStateOf<Int?>(null) }
+
     LaunchedEffect(bluetoothService) {
         bluetoothService?.receivedData?.collect { data ->
             val timestamp = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date())
@@ -125,17 +128,37 @@ fun MainScreen() {
 
     // Update device status based on Bluetooth service state
     LaunchedEffect(serviceState) {
-        if (serviceState == BluetoothLeService.STATE_CONNECTED) {
-            val timestamp = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date())
-            logs.add("$timestamp INFO: GATT connection established.")
-            // Find and update the device status in the list
-            // For now, let's assume the last device added or just update all that match "LINKING"
-            devices.forEachIndexed { index, device ->
-                if (device.status == "LINKING") {
-                    devices[index] = device.copy(status = "ONLINE")
+        val timestamp = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date())
+        when (serviceState) {
+            BluetoothLeService.STATE_CONNECTED -> {
+                logs.add("$timestamp INFO: GATT connection established.")
+                devices.forEachIndexed { index, device ->
+                    if (device.uid == selectedDeviceUid || device.status == "LINKING") {
+                        devices[index] = device.copy(status = "ONLINE")
+                    }
+                }
+            }
+            BluetoothLeService.STATE_CONNECTING -> {
+                logs.add("$timestamp INFO: Attempting to connect...")
+                devices.forEachIndexed { index, device ->
+                    if (device.uid == selectedDeviceUid) {
+                        devices[index] = device.copy(status = "LINKING")
+                    }
+                }
+            }
+            BluetoothLeService.STATE_DISCONNECTED -> {
+                // Only log if it's a real transition from a connected/connecting state, not at startup
+                if (previousServiceState != null && previousServiceState != BluetoothLeService.STATE_DISCONNECTED) {
+                    logs.add("$timestamp INFO: GATT disconnected.")
+                }
+                devices.forEachIndexed { index, device ->
+                    if (device.uid == selectedDeviceUid || device.status == "ONLINE") {
+                        devices[index] = device.copy(status = "OFFLINE")
+                    }
                 }
             }
         }
+        previousServiceState = serviceState
     }
 
     // set system bars to match app surface so status/navigation areas blend
