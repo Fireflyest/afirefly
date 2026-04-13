@@ -11,6 +11,8 @@ import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -31,17 +33,12 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.runtime.setValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.SideEffect
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import io.github.fireflyest.afirefly.ui.theme.AfPrimary
@@ -50,7 +47,6 @@ import androidx.compose.ui.tooling.preview.Preview
 import io.github.fireflyest.afirefly.ui.theme.AfireflyTheme
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
-import androidx.compose.material.icons.filled.Bluetooth
 
 
 class ScanActivity : ComponentActivity() {
@@ -74,101 +70,118 @@ fun ScanScreen(modifier: Modifier = Modifier) {
     val activity = ctx as? Activity
 
     val colors = androidx.compose.material3.MaterialTheme.colorScheme
-    val pulseTransition = rememberInfiniteTransition()
-    val pulse by pulseTransition.animateFloat(
-        initialValue = 1f,
-        targetValue = 0.35f,
-        animationSpec = infiniteRepeatable(animation = tween(1200, easing = LinearEasing))
-    )
+    // pulse used visually in title; handled below with a local transition
 
     Box(modifier = modifier.fillMaxSize()) {
         Column(modifier = Modifier.fillMaxSize()) {
-            // Top navigation (header)
+            // TopAppBar: match HTML: fixed height (h-20 ~ 80dp), translucent background
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .background(color = colors.surface)
-                    .padding(horizontal = 16.dp, vertical = 12.dp),
+                    .background(colors.surface.copy(alpha = 0.4f))
+                    .height(80.dp)
+                    .padding(horizontal = 20.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
-                IconButton(onClick = { activity?.finish() }) {
-                    Icon(imageVector = Icons.Default.ArrowBack, contentDescription = "back")
-                }
-
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Box(
-                            modifier = Modifier
-                                .size(6.dp)
-                                .clip(RoundedCornerShape(6.dp))
-                                .background(AfPrimary)
-                                .then(Modifier)
-                        )
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text(text = "SCANNING", style = androidx.compose.material3.MaterialTheme.typography.labelSmall)
+                // left: back + title
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    IconButton(onClick = { activity?.finish() }) {
+                        Icon(imageVector = Icons.Default.ArrowBack, contentDescription = "back", tint = colors.onSurface)
                     }
-                    Text(text = "14 DEVICES IDENTIFIED", style = androidx.compose.material3.MaterialTheme.typography.bodySmall)
-                }
-
-                IconButton(onClick = { /* refresh or open system bt settings */ }) {
-                    Icon(imageVector = Icons.Default.Bluetooth, contentDescription = "bt")
-                }
-            }
-
-            // Hero / status section
-            Column(modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 16.dp)) {
-                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                     Column {
-                        Text(text = "SYSTEM_LINK.LOG", style = androidx.compose.material3.MaterialTheme.typography.headlineSmall)
-                        Text(text = "NEURAL_INTERFACE // RF_ACTIVE", style = androidx.compose.material3.MaterialTheme.typography.bodySmall)
-                    }
-                    Column(horizontalAlignment = Alignment.End) {
-                        Text(text = "ID: 0x8F2A", style = androidx.compose.material3.MaterialTheme.typography.bodySmall)
-                        Text(text = "2.4GHz ACTIVE", style = androidx.compose.material3.MaterialTheme.typography.bodySmall)
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(text = "Scanning", style = androidx.compose.material3.MaterialTheme.typography.titleLarge, color = colors.onSurface)
+                        }
                     }
                 }
 
-                Spacer(modifier = Modifier.size(12.dp))
-                // divider with aurora glow imitation
-                Box(modifier = Modifier
-                    .fillMaxWidth()
-                    .height(1.dp)
-                    .background(colors.surfaceVariant)) {
+                // right: radar + nodes badge
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    // radar
+                    val spin = rememberInfiniteTransition()
+                    val angle by spin.animateFloat(initialValue = 0f, targetValue = 360f, animationSpec = infiniteRepeatable(tween(2000, easing = LinearEasing)))
+                    // more accurate radar using Canvas sector sweep
+                    androidx.compose.foundation.Canvas(modifier = Modifier.size(40.dp)) {
+                        val cx = size.width / 2f
+                        val cy = size.height / 2f
+                        val radius = size.minDimension / 2f
+                        // outer rings
+                        drawCircle(colors.primary.copy(alpha = 0.2f), radius = radius, center = androidx.compose.ui.geometry.Offset(cx, cy), style = androidx.compose.ui.graphics.drawscope.Stroke(width = 1.dp.toPx()))
+                        drawCircle(colors.primary.copy(alpha = 0.1f), radius = radius - 4.dp.toPx(), center = androidx.compose.ui.geometry.Offset(cx, cy), style = androidx.compose.ui.graphics.drawscope.Stroke(width = 1.dp.toPx()))
+                        // sweeping sector: drawArc with rotating startAngle
+                        drawArc(
+                            brush = Brush.radialGradient(listOf(colors.primary.copy(alpha = 0.28f), Color.Transparent), center = androidx.compose.ui.geometry.Offset(cx, cy), radius = radius * 1.2f),
+                            startAngle = angle - 30f,
+                            sweepAngle = 60f,
+                            useCenter = true,
+                            topLeft = androidx.compose.ui.geometry.Offset(cx - radius, cy - radius),
+                            size = androidx.compose.ui.geometry.Size(radius * 2f, radius * 2f)
+                        )
+                        // center dot
+                        drawCircle(colors.primary, radius = 3.dp.toPx(), center = androidx.compose.ui.geometry.Offset(cx, cy))
+                    }
+
+                    // nodes badge
                     Box(modifier = Modifier
-                        .width(120.dp)
-                        .fillMaxWidth(0.25f)
-                        .height(1.dp)
-                        .background(AfPrimary.copy(alpha = 0.25f)))
+                        .background(colors.surfaceVariant.copy(alpha = 0.2f), shape = RoundedCornerShape(20.dp))
+                        .border(1.dp, colors.surfaceVariant.copy(alpha = 0.3f), shape = RoundedCornerShape(20.dp))
+                        .padding(horizontal = 12.dp, vertical = 8.dp)) {
+                        Row(verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Column { Text(text = "07", style = androidx.compose.material3.MaterialTheme.typography.titleMedium, color = colors.primary); }
+                            Column { Text(text = "Nodes", style = androidx.compose.material3.MaterialTheme.typography.labelSmall, color = colors.onSurface.copy(alpha = 0.7f)) }
+                        }
+                    }
                 }
             }
 
-            // Device list
+            // (Removed hero title block to match requested layout)
+            Spacer(modifier = Modifier.height(8.dp))
+
+            // device list
             LazyColumn(modifier = Modifier
                 .fillMaxSize()
                 .padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 items(sampleDevices()) { device ->
-                    DeviceRow(device = device)
+                    // replicate card style from HTML
+                    Box(modifier = Modifier
+                        .fillMaxWidth()
+                        .background(colors.surface.copy(alpha = 0.08f), shape = RoundedCornerShape(12.dp))
+                        .border(1.dp, colors.surfaceVariant.copy(alpha = 0.2f), shape = RoundedCornerShape(12.dp))
+                        .padding(12.dp)) {
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                                Box(modifier = Modifier.size(40.dp).background(colors.surfaceVariant.copy(alpha = 0.3f), shape = RoundedCornerShape(8.dp)), contentAlignment = Alignment.Center) {
+                                    // placeholder icon (use text glyphs for now)
+                                    Text(text = "🔊")
+                                }
+                                Column {
+                                    Text(text = device.name, color = colors.onSurface, style = androidx.compose.material3.MaterialTheme.typography.titleMedium)
+                                    Text(text = device.uid, color = colors.onSurface.copy(alpha = 0.6f), style = androidx.compose.material3.MaterialTheme.typography.bodySmall)
+                                }
+                            }
+
+                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                                // signal bars
+                                Row(verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                    Box(modifier = Modifier.width(4.dp).height(8.dp).background(if (device.signal.contains("-%")) colors.surfaceVariant else colors.primary, shape = RoundedCornerShape(2.dp)))
+                                    Box(modifier = Modifier.width(4.dp).height(12.dp).background(colors.primary, shape = RoundedCornerShape(2.dp)))
+                                    Box(modifier = Modifier.width(4.dp).height(14.dp).background(colors.primary, shape = RoundedCornerShape(2.dp)))
+                                    Box(modifier = Modifier.width(4.dp).height(16.dp).background(colors.primary, shape = RoundedCornerShape(2.dp)))
+                                }
+                                // glass Connect button
+                                Box(modifier = Modifier
+                                    .background(AfPrimary.copy(alpha = 0.05f), shape = RoundedCornerShape(10.dp))
+                                    .border(1.dp, AfPrimary.copy(alpha = 0.2f), shape = RoundedCornerShape(10.dp))
+                                    .padding(horizontal = 16.dp, vertical = 8.dp)) {
+                                    Text(text = "Connect", color = AfPrimary, style = androidx.compose.material3.MaterialTheme.typography.bodySmall)
+                                }
+                            }
+                        }
+                    }
                 }
-                // spacer at end to make room for floating widget
                 item {
                     Spacer(modifier = Modifier.size(120.dp))
-                }
-            }
-        }
-
-        // Decorative radar and bottom floating status similar to HTML
-        Box(modifier = Modifier
-            .fillMaxSize(), contentAlignment = Alignment.BottomEnd) {
-            // Floating bottom right status
-            Card(modifier = Modifier
-                .padding(end = 16.dp, bottom = 24.dp)) {
-                Row(modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Box(modifier = Modifier.size(6.dp).background(Color(0xFFFFB4AB), shape = RoundedCornerShape(6.dp)))
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text(text = "Encrypted channel only", style = androidx.compose.material3.MaterialTheme.typography.labelSmall)
                 }
             }
         }
