@@ -42,6 +42,7 @@ import androidx.compose.ui.graphics.graphicsLayer
 import android.annotation.SuppressLint
 import android.content.pm.PackageManager
 import android.Manifest
+import android.bluetooth.BluetoothClass
 import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothManager
 import android.bluetooth.le.BluetoothLeScanner
@@ -85,6 +86,8 @@ data class ScannedDevice(
     val name: String?,
     val address: String,
     var rssi: Int,
+    // BluetoothClass.Device.Major if available
+    val majorClass: Int = BluetoothClass.Device.Major.UNCATEGORIZED,
     // bluetooth device type (BluetoothDevice.DEVICE_TYPE_*) if available
     val deviceType: Int = BluetoothDevice.DEVICE_TYPE_UNKNOWN,
     // service UUIDs observed in the scan record (strings)
@@ -98,39 +101,51 @@ fun getDeviceIconRes(device: ScannedDevice): Int {
     val uuids = device.serviceUuids.joinToString(separator = " ") { it.lowercase() }
 
     return when {
+        device.majorClass == BluetoothClass.Device.Major.PHONE -> R.drawable.ic_phone
+        device.majorClass == BluetoothClass.Device.Major.COMPUTER -> R.drawable.ic_computer
+        device.majorClass == BluetoothClass.Device.Major.NETWORKING -> R.drawable.ic_networking
+        device.majorClass == BluetoothClass.Device.Major.WEARABLE -> R.drawable.ic_wearable
+        device.majorClass == BluetoothClass.Device.Major.HEALTH -> R.drawable.ic_health
+        device.majorClass == BluetoothClass.Device.Major.TOY -> R.drawable.ic_toy
+        device.majorClass == BluetoothClass.Device.Major.AUDIO_VIDEO -> R.drawable.ic_audio
+        device.majorClass == BluetoothClass.Device.Major.PERIPHERAL -> R.drawable.ic_peripheral
+        device.majorClass == 0x1F00 -> when {
+            name.contains("smart band") || name.contains("band") || name.contains("watch") -> R.drawable.ic_wearable
+            else -> R.drawable.ic_bluetooth
+        }
         device.deviceType == BluetoothDevice.DEVICE_TYPE_CLASSIC -> when {
-            name.contains("audio") || name.contains("speaker") || name.contains("headset") || name.contains("headphones") || name.contains("sound") -> R.drawable.ic_device_audio
-            name.contains("phone") -> R.drawable.ic_device_phone
-            name.contains("bridge") || name.contains("gateway") || name.contains("link") || name.contains("router") -> R.drawable.ic_device_gateway
-            else -> R.drawable.ic_device_classic
+            name.contains("audio") || name.contains("speaker") || name.contains("headset") || name.contains("headphones") || name.contains("sound") -> R.drawable.ic_audio
+            name.contains("phone") -> R.drawable.ic_phone
+            name.contains("bridge") || name.contains("gateway") || name.contains("link") || name.contains("router") -> R.drawable.ic_networking
+            else -> R.drawable.ic_bluetooth
         }
         device.deviceType == BluetoothDevice.DEVICE_TYPE_LE -> when {
-            uuids.contains("0000180f") || name.contains("battery") -> R.drawable.ic_device_battery
-            uuids.contains("0000180d") || name.contains("heart") || name.contains("hrm") -> R.drawable.ic_device_sensor
-            name.contains("temp") || name.contains("therm") || name.contains("sensor") -> R.drawable.ic_device_sensor
-            name.contains("gps") || name.contains("location") || name.contains("nav") -> R.drawable.ic_device_gateway
-            name.contains("drone") || name.contains("vtol") || name.contains("fly") -> R.drawable.ic_device_unknown
-            name.contains("watch") || name.contains("fit") || name.contains("band") -> R.drawable.ic_device_classic
-            else -> R.drawable.ic_device_le
+            uuids.contains("0000180f") || name.contains("battery") -> R.drawable.ic_bluetooth
+            uuids.contains("0000180d") || name.contains("heart") || name.contains("hrm") -> R.drawable.ic_health
+            name.contains("temp") || name.contains("therm") || name.contains("sensor") -> R.drawable.ic_health
+            name.contains("gps") || name.contains("location") || name.contains("nav") -> R.drawable.ic_networking
+            name.contains("drone") || name.contains("vtol") || name.contains("fly") -> R.drawable.ic_toy
+            name.contains("watch") || name.contains("fit") || name.contains("band") -> R.drawable.ic_wearable
+            else -> R.drawable.ic_bluetooth
         }
         device.deviceType == BluetoothDevice.DEVICE_TYPE_DUAL -> when {
-            name.contains("audio") || name.contains("speaker") || name.contains("headset") || name.contains("headphones") -> R.drawable.ic_device_audio
-            name.contains("sensor") || name.contains("temp") || name.contains("therm") -> R.drawable.ic_device_sensor
-            name.contains("bridge") || name.contains("gateway") || name.contains("link") || name.contains("router") -> R.drawable.ic_device_gateway
-            else -> R.drawable.ic_device_dual
+            name.contains("audio") || name.contains("speaker") || name.contains("headset") || name.contains("headphones") -> R.drawable.ic_audio
+            name.contains("sensor") || name.contains("temp") || name.contains("therm") -> R.drawable.ic_health
+            name.contains("bridge") || name.contains("gateway") || name.contains("link") || name.contains("router") -> R.drawable.ic_networking
+            else -> R.drawable.ic_bluetooth
         }
         else -> when {
             // Common BLE service UUID substrings
-            uuids.contains("0000180f") || name.contains("battery") -> R.drawable.ic_device_battery
-            uuids.contains("0000180d") || name.contains("heart") || name.contains("hrm") -> R.drawable.ic_device_sensor
-            name.contains("audio") || name.contains("speaker") || name.contains("mona") || name.contains("sound") -> R.drawable.ic_device_audio
-            name.contains("watch") || name.contains("fit") || name.contains("band") -> R.drawable.ic_device_classic
-            name.contains("phone") || name.contains("headset") || name.contains("headphones") -> R.drawable.ic_device_phone
-            name.contains("gps") || name.contains("location") || name.contains("nav") -> R.drawable.ic_device_gateway
-            name.contains("temp") || name.contains("therm") || name.contains("sensor") -> R.drawable.ic_device_sensor
-            name.contains("bridge") || name.contains("gateway") || name.contains("link") || name.contains("router") -> R.drawable.ic_device_gateway
-            name.contains("drone") || name.contains("vtol") || name.contains("fly") -> R.drawable.ic_device_unknown
-            else -> R.drawable.ic_device_unknown
+            uuids.contains("0000180f") || name.contains("battery") -> R.drawable.ic_bluetooth
+            uuids.contains("0000180d") || name.contains("heart") || name.contains("hrm") -> R.drawable.ic_health
+            name.contains("audio") || name.contains("speaker") || name.contains("mona") || name.contains("sound") -> R.drawable.ic_audio
+            name.contains("watch") || name.contains("fit") || name.contains("band") -> R.drawable.ic_wearable
+            name.contains("phone") || name.contains("headset") || name.contains("headphones") -> R.drawable.ic_phone
+            name.contains("gps") || name.contains("location") || name.contains("nav") -> R.drawable.ic_networking
+            name.contains("temp") || name.contains("therm") || name.contains("sensor") -> R.drawable.ic_health
+            name.contains("bridge") || name.contains("gateway") || name.contains("link") || name.contains("router") -> R.drawable.ic_networking
+            name.contains("drone") || name.contains("vtol") || name.contains("fly") -> R.drawable.ic_toy
+            else -> R.drawable.ic_bluetooth
         }
     }
 }
@@ -206,6 +221,7 @@ fun ScanScreen(modifier: Modifier = Modifier) {
                 // ignore devices without a discoverable name (per request)
                 if (name.isNullOrBlank()) return
                 val rssi = result.rssi
+                val majorClass = result.device.bluetoothClass?.majorDeviceClass ?: BluetoothClass.Device.Major.UNCATEGORIZED
                 val deviceType = try { d.type } catch (_: Exception) { BluetoothDevice.DEVICE_TYPE_UNKNOWN }
                 val uuids = result.scanRecord?.serviceUuids?.map { it.uuid.toString() } ?: emptyList()
                 Handler(Looper.getMainLooper()).post {
@@ -213,7 +229,7 @@ fun ScanScreen(modifier: Modifier = Modifier) {
                     if (idx >= 0) {
                         scannedDevices[idx].rssi = rssi
                     } else {
-                        scannedDevices.add(ScannedDevice(name, addr, rssi, deviceType, uuids))
+                        scannedDevices.add(ScannedDevice(name, addr, rssi, majorClass, deviceType, uuids))
                     }
                 }
             }
