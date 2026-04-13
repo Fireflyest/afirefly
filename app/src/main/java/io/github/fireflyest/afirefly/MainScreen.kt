@@ -1380,12 +1380,19 @@ fun FooterBar(
         // SEND vs QUICK-ADD behaviour with animated size sync with clear icon
         val targetButtonWidth = if (inputText.isBlank()) 50.dp else 100.dp
         val animButtonWidth by animateDpAsState(targetButtonWidth, animationSpec = tween(durationMillis = 220))
-        Box(modifier = Modifier.width(animButtonWidth)) {
+        Box(
+            modifier = Modifier
+                .width(animButtonWidth)
+                .height(44.dp) // Fixed height to match overall row alignment
+                .padding(end = 6.dp),
+            contentAlignment = Alignment.Center
+        ) {
             Crossfade(targetState = inputText.isNotBlank(), label = "send_add_crossfade") { hasText ->
                 if (!hasText) {
-                    IconButton(onClick = { showQuickDialog = true }, modifier = Modifier
-                        .size(44.dp)
-                        .padding(end = 6.dp)) {
+                    IconButton(
+                        onClick = { showQuickDialog = true },
+                        modifier = Modifier.size(44.dp) // Maintain consistent clickable size
+                    ) {
                         // outlined circular add (no fill)
                         Box(modifier = Modifier
                             .size(36.dp)
@@ -1398,8 +1405,8 @@ fun FooterBar(
                     // handles both events without the Button's internal onClick taking precedence.
                     Box(
                         modifier = Modifier
-                            .height(44.dp)
-                            .padding(end = 4.dp)
+                            .fillMaxWidth()
+                            .height(44.dp) // Explicitly set height
                             .background(colors.surfaceVariant, shape = RoundedCornerShape(8.dp))
                             .combinedClickable(
                                 onClick = {
@@ -1409,8 +1416,7 @@ fun FooterBar(
                                 onLongClick = {
                                     onSaveCommand(inputText)
                                 }
-                            )
-                            .padding(horizontal = 16.dp),
+                            ),
                         contentAlignment = Alignment.Center
                     ) {
                         Text(
@@ -1473,5 +1479,9 @@ fun MainScreenPreview() {
         MainScreen()
     }
 }
+
+
+
+
 
 
