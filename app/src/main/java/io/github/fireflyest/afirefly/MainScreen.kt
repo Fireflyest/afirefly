@@ -73,7 +73,9 @@ data class Device(
     val signal: String,
     val battery: String,
     val locked: Boolean,
-    val gps: Boolean
+    val gps: Boolean,
+    val serviceUuid: String? = null,
+    val charUuid: String? = null
 )
 
 
@@ -136,7 +138,9 @@ fun MainScreen() {
                         signal = obj.optString("signal", "--"),
                         battery = obj.optString("battery", "--"),
                         locked = obj.optBoolean("locked", false),
-                        gps = obj.optBoolean("gps", false)
+                        gps = obj.optBoolean("gps", false),
+                        serviceUuid = obj.optString("serviceUuid", null),
+                        charUuid = obj.optString("charUuid", null)
                     ))
                 }
                 devices.clear()
@@ -175,6 +179,8 @@ fun MainScreen() {
                 put("battery", device.battery)
                 put("locked", device.locked)
                 put("gps", device.gps)
+                put("serviceUuid", device.serviceUuid)
+                put("charUuid", device.charUuid)
             }
 
             // Find if already exists and update, else add
@@ -235,7 +241,7 @@ fun MainScreen() {
         bluetoothService?.receivedData?.collect { data ->
             val timestamp = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date())
             val hexString = data.joinToString("") { "%02X ".format(it) }
-            logs.add("$timestamp RECV: $hexString")
+            logs.add("$timestamp RX: $hexString")
         }
     }
 
@@ -386,7 +392,9 @@ fun MainScreen() {
                 TopHeader(
                     onOpenScan = { scanLauncher.launch(Intent(ctx, ScanActivity::class.java)) },
                     bluetoothService = bluetoothService,
-                    selectedDeviceUid = selectedDeviceUid
+                    selectedDeviceUid = selectedDeviceUid,
+                    devices = devices,
+                    onDeviceSave = { saveDevice(it) }
                 )
                 MainContent(
                     modifier = Modifier.weight(1f), 
@@ -406,9 +414,18 @@ fun MainScreen() {
                 FooterBar(
                     quickCommands = quickCommands,
                     onSendMessage = { msg ->
-                        bluetoothService?.sendData(msg)
+                        val currentDevice = devices.find { it.uid == selectedDeviceUid }
+                        val sUuidStr = currentDevice?.serviceUuid
+                        val cUuidStr = currentDevice?.charUuid
+                        
+                        if (sUuidStr != null && cUuidStr != null) {
+                            bluetoothService?.sendData(UUID.fromString(sUuidStr), UUID.fromString(cUuidStr), msg)
+                        } else {
+                            bluetoothService?.sendData(msg)
+                        }
+                        
                         val timestamp = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date())
-                        logs.add("$timestamp SEND: $msg")
+                        logs.add("$timestamp TX: $msg")
                     },
                     onSaveCommand = { 
                         saveQuickCommand(it) 
@@ -496,8 +513,14 @@ fun SlimOutlinedTextField(
 }
 
 @Composable
-fun TopHeader(onOpenScan: () -> Unit, bluetoothService: BluetoothLeService?, selectedDeviceUid: String?) {
-    val colors = androidx.compose.material3.MaterialTheme.colorScheme
+fun TopHeader(
+    onOpenScan: () -> Unit,
+    bluetoothService: BluetoothLeService?,
+    selectedDeviceUid: String?,
+    devices: List<Device>,
+    onDeviceSave: (Device) -> Unit
+) {
+    val colors = MaterialTheme.colorScheme
     // Collapsible capsule search: shows a small pill with icon+label, expands to full search field on tap
     var expanded by remember { mutableStateOf(false) }
     val focusRequester = remember { FocusRequester() }
@@ -507,8 +530,12 @@ fun TopHeader(onOpenScan: () -> Unit, bluetoothService: BluetoothLeService?, sel
     var charExpanded by remember { mutableStateOf(false) }
 
     // Selected UUIDs
-    var selectedServiceUuid by remember(selectedDeviceUid) { mutableStateOf<String?>(null) }
-    var selectedCharUuid by remember(selectedDeviceUid, selectedServiceUuid) { mutableStateOf<String?>(null) }
+    var selectedServiceUuid by remember(selectedDeviceUid) { 
+        mutableStateOf<String?>(devices.find { it.uid == selectedDeviceUid }?.serviceUuid) 
+    }
+    var selectedCharUuid by remember(selectedDeviceUid) { 
+        mutableStateOf<String?>(devices.find { it.uid == selectedDeviceUid }?.charUuid) 
+    }
     
     // Internal cache for services to prevent transient clearing
     var cachedServices by remember(selectedDeviceUid) { mutableStateOf<List<android.bluetooth.BluetoothGattService>>(emptyList()) }
@@ -915,6 +942,10 @@ fun TopHeader(onOpenScan: () -> Unit, bluetoothService: BluetoothLeService?, sel
                         onClick = {
                             selectedServiceUuid = uuidStr
                             serviceExpanded = false
+                            // Auto-save selection to device
+                            devices.find { it.uid == selectedDeviceUid }?.let { dev ->
+                                onDeviceSave(dev.copy(serviceUuid = uuidStr))
+                            }
                         }
                     )
                 }
@@ -962,6 +993,14 @@ fun TopHeader(onOpenScan: () -> Unit, bluetoothService: BluetoothLeService?, sel
                         onClick = {
                             selectedCharUuid = uuidStr
                             charExpanded = false
+                            // Auto-save selection to device
+                            devices.find { it.uid == selectedDeviceUid }?.let { dev ->
+                                onDeviceSave(dev.copy(serviceUuid = selectedServiceUuid, charUuid = uuidStr))
+                            }
+                            // Enable notifications for the selected characteristic
+                            if (selectedServiceUuid != null) {
+                                bluetoothService?.enableNotifications(UUID.fromString(selectedServiceUuid), UUID.fromString(uuidStr))
+                            }
                         }
                     )
                 }
@@ -1479,9 +1518,5 @@ fun MainScreenPreview() {
         MainScreen()
     }
 }
-
-
-
-
 
 

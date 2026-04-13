@@ -104,6 +104,48 @@ class BluetoothLeService : Service() {
         return bluetoothGatt?.services
     }
 
+    fun resetDiscoveredServices() {
+        _discoveredServices.value = emptyList()
+    }
+
+    fun enableNotifications(serviceUuid: UUID, charUuid: UUID) {
+        val gatt = bluetoothGatt ?: return
+        val service = gatt.getService(serviceUuid) ?: return
+        val characteristic = service.getCharacteristic(charUuid) ?: return
+
+        gatt.setCharacteristicNotification(characteristic, true)
+        val descriptor = characteristic.getDescriptor(BluetoothConstants.CCCD_UUID)
+        if (descriptor != null) {
+            @Suppress("DEPRECATION")
+            descriptor.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
+            @Suppress("DEPRECATION")
+            gatt.writeDescriptor(descriptor)
+        }
+    }
+
+    private fun broadcastUpdate(characteristic: BluetoothGattCharacteristic) {
+        @Suppress("DEPRECATION")
+        val data = characteristic.value
+        if (data != null && data.isNotEmpty()) {
+            _receivedData.tryEmit(data)
+        }
+    }
+
+    fun sendData(serviceUuid: UUID, charUuid: UUID, data: String) {
+        val gatt = bluetoothGatt ?: return
+        val service = gatt.getService(serviceUuid) ?: return
+        val characteristic = service.getCharacteristic(charUuid) ?: return
+        writeCharacteristic(characteristic, data.toByteArray())
+    }
+
+    fun sendData(data: String) {
+        val service = bluetoothGatt?.getService(BluetoothConstants.SERVICE_UUID) ?: return
+        val characteristic = service.getCharacteristic(BluetoothConstants.TX_CHARACTERISTIC_UUID)
+        if (characteristic != null) {
+            writeCharacteristic(characteristic, data.toByteArray())
+        }
+    }
+
     private val gattCallback = object : BluetoothGattCallback() {
         override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
             if (newState == BluetoothProfile.STATE_CONNECTED) {
@@ -124,7 +166,6 @@ class BluetoothLeService : Service() {
                 if (services.isNotEmpty()) {
                     _discoveredServices.value = services
                 }
-                enableNotifications()
             } else {
                 Log.w(TAG, "onServicesDiscovered received: $status")
             }
@@ -140,39 +181,6 @@ class BluetoothLeService : Service() {
             if (status == BluetoothGatt.GATT_SUCCESS) {
                 broadcastUpdate(characteristic)
             }
-        }
-    }
-
-    private fun enableNotifications() {
-        val service = bluetoothGatt?.getService(BluetoothConstants.SERVICE_UUID) ?: return
-        val characteristic = service.getCharacteristic(BluetoothConstants.RX_CHARACTERISTIC_UUID)
-        if (characteristic != null) {
-            bluetoothGatt?.setCharacteristicNotification(characteristic, true)
-            val descriptor = characteristic.getDescriptor(BluetoothConstants.CCCD_UUID)
-            if (descriptor != null) {
-                @Suppress("DEPRECATION")
-                descriptor.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
-                @Suppress("DEPRECATION")
-                bluetoothGatt?.writeDescriptor(descriptor)
-            }
-        }
-    }
-
-    private fun broadcastUpdate(characteristic: BluetoothGattCharacteristic) {
-        if (BluetoothConstants.RX_CHARACTERISTIC_UUID == characteristic.uuid) {
-            @Suppress("DEPRECATION")
-            val data = characteristic.value
-            if (data != null && data.isNotEmpty()) {
-                _receivedData.tryEmit(data)
-            }
-        }
-    }
-
-    fun sendData(data: String) {
-        val service = bluetoothGatt?.getService(BluetoothConstants.SERVICE_UUID) ?: return
-        val characteristic = service.getCharacteristic(BluetoothConstants.TX_CHARACTERISTIC_UUID)
-        if (characteristic != null) {
-            writeCharacteristic(characteristic, data.toByteArray())
         }
     }
 
