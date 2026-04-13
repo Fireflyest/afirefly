@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.wrapContentHeight
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -32,6 +33,7 @@ import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.LockOpen
 import androidx.compose.material.icons.filled.SignalCellular4Bar
 import androidx.compose.material.icons.filled.LocationOn
+import androidx.compose.material.icons.filled.Search
  
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -58,6 +60,10 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.animation.animateContentSize
  
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.navigationBarsPadding
@@ -218,25 +224,54 @@ fun SlimOutlinedTextField(
 @Composable
 fun TopHeader() {
     val colors = androidx.compose.material3.MaterialTheme.colorScheme
+    // Collapsible capsule search: shows a small pill with icon+label, expands to full search field on tap
+    var expanded by remember { mutableStateOf(false) }
+    val focusRequester = remember { FocusRequester() }
+
+
     Row(modifier = Modifier
         .statusBarsPadding()
         .fillMaxWidth()
         .background(colors.surface)
         .padding(horizontal = 16.dp, vertical = 6.dp),
         verticalAlignment = Alignment.CenterVertically) {
-        // search: reduce internal vertical spacing so placeholder isn't clipped on compact heights
-        SlimOutlinedTextField(
-            value = "",
-            onValueChange = {},
-            placeholder = { Text("FILTER_LOGS_BY_UUID...", color = colors.onSurface.copy(alpha = 0.6f), fontFamily = FontFamily.Monospace, fontSize = 13.sp) },
-            modifier = Modifier
-                .weight(1f)
-                .height(40.dp),
-            singleLine = true,
-            textStyle = TextStyle(fontFamily = FontFamily.Monospace, fontSize = 12.sp, lineHeight = 14.sp),
-            borderColor = colors.outline,
-            backgroundColor = colors.surface
-        )
+        // container with animated content size so collapsed width is just the capsule size
+        Box(modifier = Modifier
+            .weight(1f)
+            .animateContentSize()) {
+            if (!expanded) {
+                // collapsed capsule: only wrap content width so it stays small
+                Row(modifier = Modifier
+                    .wrapContentWidth()
+                    .height(40.dp)
+                    .clickable { expanded = true }
+                    .background(colors.surfaceVariant, shape = RoundedCornerShape(20.dp))
+                    .padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Icon(imageVector = Icons.Default.Search, contentDescription = "search", tint = colors.outline)
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Search", color = colors.outline, fontFamily = FontFamily.Monospace, fontSize = 13.sp)
+                }
+            } else {
+                // expanded: real input takes full width of the container
+                var searchText by remember { mutableStateOf("") }
+                SlimOutlinedTextField(
+                    value = searchText,
+                    onValueChange = { searchText = it },
+                    placeholder = { Text("FILTER_LOGS_BY_UUID...", color = colors.onSurface.copy(alpha = 0.6f), fontFamily = FontFamily.Monospace, fontSize = 13.sp) },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(40.dp)
+                        .focusRequester(focusRequester),
+                    singleLine = true,
+                    textStyle = TextStyle(fontFamily = FontFamily.Monospace, fontSize = 12.sp, lineHeight = 14.sp),
+                    borderColor = colors.outline,
+                    backgroundColor = colors.surface,
+                    onTextLayout = {}
+                )
+                LaunchedEffect(Unit) { focusRequester.requestFocus() }
+            }
+        }
+
         Spacer(modifier = Modifier.width(12.dp))
         // make bluetooth icon open ScanActivity when tapped
         val ctx = LocalContext.current
@@ -254,7 +289,8 @@ fun TopHeader() {
 fun MainContent(modifier: Modifier = Modifier) {
     Column(modifier = modifier
         .fillMaxSize()
-        .padding(16.dp)) {
+        // remove bottom padding so logs can reach the footer without an extra gap
+        .padding(start = 16.dp, end = 16.dp, top = 16.dp, bottom = 0.dp)) {
         // Device selector (horizontal scroll)
         DeviceSelector()
 
