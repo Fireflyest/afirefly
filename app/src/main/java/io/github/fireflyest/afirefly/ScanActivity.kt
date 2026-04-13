@@ -17,6 +17,7 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 // ...existing imports...
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -73,6 +74,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import android.content.Intent
 import androidx.compose.ui.res.painterResource
 import io.github.fireflyest.afirefly.ui.theme.AfPrimary
 import androidx.compose.ui.unit.dp
@@ -234,6 +236,21 @@ fun ScanScreen(modifier: Modifier = Modifier) {
                 }
             }
         }
+    }
+
+    val returnSelectedDevice: (ScannedDevice) -> Unit = { device ->
+        val resultIntent = Intent().putConnectedDevice(
+            ConnectedDeviceInfo(
+                name = device.name ?: "Unknown Device",
+                address = device.address,
+                rssi = device.rssi,
+                majorClass = device.majorClass,
+                deviceType = device.deviceType,
+                serviceUuids = device.serviceUuids
+            )
+        )
+        activity?.setResult(Activity.RESULT_OK, resultIntent)
+        activity?.finish()
     }
 
 // ...existing code...
@@ -437,6 +454,7 @@ fun ScanScreen(modifier: Modifier = Modifier) {
                             alpha = enterAlpha
                             translationY = enterOffset
                         }
+                        .clickable { returnSelectedDevice(device) }
                         .background(colors.surface.copy(alpha = 0.08f), shape = RoundedCornerShape(12.dp))
                         .border(1.dp, colors.surfaceVariant.copy(alpha = 0.2f), shape = RoundedCornerShape(12.dp))
                         .padding(12.dp)) {
@@ -499,6 +517,7 @@ fun ScanScreen(modifier: Modifier = Modifier) {
                                     .width(80.dp)
                                     .background(AfPrimary.copy(alpha = 0.05f), shape = RoundedCornerShape(10.dp))
                                     .border(1.dp, AfPrimary.copy(alpha = 0.2f), shape = RoundedCornerShape(10.dp))
+                                    .clickable { returnSelectedDevice(device) }
                                     .padding(horizontal = 10.dp, vertical = 8.dp), contentAlignment = Alignment.Center) {
                                     Text(text = "Connect", color = AfPrimary, style = androidx.compose.material3.MaterialTheme.typography.bodySmall)
                                 }

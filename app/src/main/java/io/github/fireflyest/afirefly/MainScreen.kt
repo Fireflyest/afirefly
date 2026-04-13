@@ -1,5 +1,6 @@
 package io.github.fireflyest.afirefly
 
+import android.app.Activity
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
@@ -37,6 +38,7 @@ import androidx.compose.material.icons.filled.Search
  
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
 // OutlinedTextField replaced by SlimOutlinedTextField for compact inputs
 import androidx.compose.foundation.border
@@ -50,11 +52,14 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.SideEffect
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.LocalContext
 import android.content.Intent
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import com.google.accompanist.systemuicontroller.rememberSystemUiController
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -96,7 +101,24 @@ fun MainScreen() {
     // use system color scheme (dark/light) via MaterialTheme
     val colors = androidx.compose.material3.MaterialTheme.colorScheme
     val view = LocalView.current
+    val ctx = LocalContext.current
     val isDark = isSystemInDarkTheme()
+    val devices = remember {
+        mutableStateListOf<Device>().apply { addAll(sampleDevices()) }
+    }
+
+    val scanLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+        if (result.resultCode == Activity.RESULT_OK) {
+            val info = result.data?.toConnectedDeviceInfo() ?: return@rememberLauncherForActivityResult
+            val newDevice = info.toMainDevice()
+            val idx = devices.indexOfFirst { it.uid == newDevice.uid }
+            if (idx >= 0) {
+                devices[idx] = newDevice
+            } else {
+                devices.add(0, newDevice)
+            }
+        }
+    }
 
     // set system bars to match app surface so status/navigation areas blend
     if (!view.isInEditMode) {
@@ -138,8 +160,8 @@ fun MainScreen() {
             }) {
 
             Column(modifier = Modifier.fillMaxSize()) {
-                TopHeader()
-                MainContent(modifier = Modifier.weight(1f))
+                TopHeader(onOpenScan = { scanLauncher.launch(Intent(ctx, ScanActivity::class.java)) })
+                MainContent(modifier = Modifier.weight(1f), devices = devices)
                 FooterBar()
             }
         }
@@ -222,7 +244,7 @@ fun SlimOutlinedTextField(
 }
 
 @Composable
-fun TopHeader() {
+fun TopHeader(onOpenScan: () -> Unit) {
     val colors = androidx.compose.material3.MaterialTheme.colorScheme
     // Collapsible capsule search: shows a small pill with icon+label, expands to full search field on tap
     var expanded by remember { mutableStateOf(false) }
@@ -274,8 +296,7 @@ fun TopHeader() {
 
         Spacer(modifier = Modifier.width(12.dp))
         // make bluetooth icon open ScanActivity when tapped
-        val ctx = LocalContext.current
-        IconButton(onClick = {ctx.startActivity(Intent(ctx, ScanActivity::class.java))}) {
+        IconButton(onClick = onOpenScan) {
             Icon(
                 imageVector = Icons.Default.Bluetooth,
                 contentDescription = "bt",
@@ -286,13 +307,13 @@ fun TopHeader() {
 }
 
 @Composable
-fun MainContent(modifier: Modifier = Modifier) {
+fun MainContent(modifier: Modifier = Modifier, devices: List<Device>) {
     Column(modifier = modifier
         .fillMaxSize()
         // remove bottom padding so logs can reach the footer without an extra gap
         .padding(start = 16.dp, end = 16.dp, top = 16.dp, bottom = 0.dp)) {
         // Device selector (horizontal scroll)
-        DeviceSelector()
+        DeviceSelector(devices = devices)
 
         Spacer(modifier = Modifier.height(6.dp))
 
@@ -302,8 +323,7 @@ fun MainContent(modifier: Modifier = Modifier) {
 }
 
 @Composable
-fun DeviceSelector() {
-    val devices = remember { sampleDevices() }
+fun DeviceSelector(devices: List<Device>) {
     Column {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Box(modifier = Modifier
@@ -324,23 +344,45 @@ fun DeviceSelector() {
 @Composable
 fun DeviceCard(device: Device) {
     val colors = androidx.compose.material3.MaterialTheme.colorScheme
-    Card(modifier = Modifier
-        .width(192.dp)
-        .clickable { }, shape = RoundedCornerShape(12.dp), elevation = androidx.compose.material3.CardDefaults.cardElevation(defaultElevation = 0.dp)) {
+    val isOnline = device.status == "ONLINE"
+    val isLinking = device.status == "LINKING"
+    val containerColor = when {
+        isOnline -> colors.primary.copy(alpha = 0.10f)
+        isLinking -> colors.tertiary.copy(alpha = 0.10f)
+        else -> colors.surfaceVariant
+    }
+    val borderColor = when {
+        isOnline -> colors.primary.copy(alpha = 0.35f)
+        isLinking -> colors.tertiary.copy(alpha = 0.35f)
+        else -> colors.surfaceVariant
+    }
+
+    Card(
+        modifier = Modifier
+            .width(192.dp)
+            .clickable { },
+        shape = RoundedCornerShape(12.dp),
+        colors = CardDefaults.cardColors(containerColor = containerColor),
+        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
+    ) {
         Column(modifier = Modifier
-            .background(colors.surfaceVariant)
-            .padding(horizontal = 12.dp, vertical = 8.dp)) {
+            .border(1.dp, borderColor, shape = RoundedCornerShape(12.dp))
+            .padding(horizontal = 8.dp, vertical = 8.dp)) {
             Row(horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.Top, modifier = Modifier.fillMaxWidth()) {
                 Column {
                     Text(text = device.name, color = colors.onSurface, fontWeight = FontWeight.Bold, fontSize = 16.sp)
                     Text(text = device.uid, color = colors.outline, fontFamily = FontFamily.Monospace, fontSize = 11.sp)
                 }
-                val badgeColor = if (device.status == "ONLINE") colors.primary else colors.tertiary
                 Box(modifier = Modifier
-                    .background(badgeColor.copy(alpha = 0.15f), shape = RoundedCornerShape(6.dp))
-                    .padding(horizontal = 8.dp, vertical = 4.dp)) {
-                    Text(text = device.status, color = badgeColor, fontFamily = FontFamily.Monospace, fontSize = 10.sp)
-                }
+                    .size(10.dp)
+                    .background(
+                        when {
+                            isOnline -> colors.primary
+                            isLinking -> colors.tertiary
+                            else -> colors.outline
+                        },
+                        shape = RoundedCornerShape(10.dp)
+                    ))
             }
 
             Spacer(modifier = Modifier.height(6.dp))
