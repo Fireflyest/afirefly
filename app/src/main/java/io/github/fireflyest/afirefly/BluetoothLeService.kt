@@ -64,6 +64,9 @@ class BluetoothLeService : Service() {
             return false
         }
 
+        disconnect()
+        close()
+
         try {
             val device = bluetoothAdapter!!.getRemoteDevice(address)
             _connectionState.value = STATE_CONNECTING

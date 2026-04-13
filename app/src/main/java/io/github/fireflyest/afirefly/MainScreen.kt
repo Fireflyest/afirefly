@@ -1,7 +1,9 @@
 package io.github.fireflyest.afirefly
 
+import android.annotation.SuppressLint
 import android.app.Activity
 import android.content.ComponentName
+import android.content.Context
 import android.content.Intent
 import android.content.ServiceConnection
 import android.os.Bundle
@@ -21,6 +23,7 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -47,6 +50,7 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
@@ -54,6 +58,9 @@ import androidx.compose.ui.unit.sp
 import com.google.accompanist.systemuicontroller.rememberSystemUiController
 import io.github.fireflyest.afirefly.ui.theme.AfireflyTheme
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.launch
+import org.json.JSONArray
+import org.json.JSONObject
 import java.text.SimpleDateFormat
 import java.util.*
 
@@ -65,6 +72,7 @@ fun MainScreen() {
     val view = LocalView.current
     val ctx = LocalContext.current
     val isDark = isSystemInDarkTheme()
+    val scope = rememberCoroutineScope()
     val devices = remember {
         mutableStateListOf<Device>()
     }
@@ -94,6 +102,73 @@ fun MainScreen() {
 
     val serviceState by (bluetoothService?.connectionState ?: MutableStateFlow(BluetoothLeService.STATE_DISCONNECTED)).collectAsState()
 
+    // Load saved devices on startup
+    LaunchedEffect(Unit) {
+        val prefs = ctx.getSharedPreferences("afirefly_prefs", Context.MODE_PRIVATE)
+        val savedJson = prefs.getString("saved_devices", null)
+        if (savedJson != null) {
+            try {
+                val jsonArray = JSONArray(savedJson)
+                val loadedDevices = mutableListOf<Device>()
+                for (i in 0 until jsonArray.length()) {
+                    val obj = jsonArray.getJSONObject(i)
+                    loadedDevices.add(Device(
+                        name = obj.getString("name"),
+                        subtitle = obj.getString("subtitle"),
+                        uid = obj.getString("uid"),
+                        status = "OFFLINE", // Always start as offline
+                        signal = obj.optString("signal", "--"),
+                        battery = obj.optString("battery", "--"),
+                        locked = obj.optBoolean("locked", false),
+                        gps = obj.optBoolean("gps", false)
+                    ))
+                }
+                devices.clear()
+                devices.addAll(loadedDevices)
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+    }
+
+    // Save a single device to permanent storage
+    fun saveDevice(device: Device) {
+        scope.launch {
+            val prefs = ctx.getSharedPreferences("afirefly_prefs", Context.MODE_PRIVATE)
+            val savedJson = prefs.getString("saved_devices", "[]")
+            val jsonArray = try { JSONArray(savedJson) } catch (e: Exception) { JSONArray() }
+            
+            val newObj = JSONObject().apply {
+                put("name", device.name)
+                put("subtitle", device.subtitle)
+                put("uid", device.uid)
+                put("signal", device.signal)
+                put("battery", device.battery)
+                put("locked", device.locked)
+                put("gps", device.gps)
+            }
+
+            // Find if already exists and update, else add
+            var found = false
+            for (i in 0 until jsonArray.length()) {
+                val obj = jsonArray.getJSONObject(i)
+                if (obj.getString("uid") == device.uid) {
+                    jsonArray.put(i, newObj)
+                    found = true
+                    break
+                }
+            }
+            if (!found) {
+                jsonArray.put(newObj)
+            }
+            
+            prefs.edit().putString("saved_devices", jsonArray.toString()).apply()
+            
+            val timestamp = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date())
+            logs.add("$timestamp INFO: Device saved: ${device.name}")
+        }
+    }
+
     // Track previous state to avoid redundant logs on startup
     var previousServiceState by remember { mutableStateOf<Int?>(null) }
 
@@ -119,10 +194,58 @@ fun MainScreen() {
             } else {
                 devices.add(0, newDevice)
             }
+            // Removed automatic save here
             // Auto-select the newly added device
             selectedDeviceUid = newDevice.uid
             // Automatically connect to the scanned device
             bluetoothService?.connect(newDevice.uid)
+        }
+    }
+
+    // Move device in list
+    fun moveDevice(uid: String, up: Boolean) {
+        val idx = devices.indexOfFirst { it.uid == uid }
+        if (idx == -1) return
+        val newIdx = if (up) idx - 1 else idx + 1
+        if (newIdx in 0 until devices.size) {
+            val temp = devices[idx]
+            devices.removeAt(idx)
+            devices.add(newIdx, temp)
+        }
+    }
+
+    // Long press to remove device from UI and local storage
+    fun removeDevice(uid: String) {
+        val idx = devices.indexOfFirst { it.uid == uid }
+        if (idx >= 0) {
+            val deviceToRemove = devices[idx]
+            // If the device is currently connected/linking, disconnect it first
+            if (deviceToRemove.status == "ONLINE" || deviceToRemove.status == "LINKING") {
+                bluetoothService?.disconnect()
+            }
+            
+            devices.removeAt(idx)
+            if (selectedDeviceUid == uid) {
+                selectedDeviceUid = if (devices.isNotEmpty()) devices[0].uid else null
+            }
+            
+            // Also remove from permanent storage
+            scope.launch {
+                val prefs = ctx.getSharedPreferences("afirefly_prefs", Context.MODE_PRIVATE)
+                val savedJson = prefs.getString("saved_devices", "[]")
+                val jsonArray = try { JSONArray(savedJson) } catch (e: Exception) { JSONArray() }
+                val newArray = JSONArray()
+                for (i in 0 until jsonArray.length()) {
+                    val obj = jsonArray.getJSONObject(i)
+                    if (obj.getString("uid") != uid) {
+                        newArray.put(obj)
+                    }
+                }
+                prefs.edit().putString("saved_devices", newArray.toString()).apply()
+                
+                val timestamp = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date())
+                logs.add("$timestamp INFO: Device removed: ${deviceToRemove.name}")
+            }
         }
     }
 
@@ -211,7 +334,15 @@ fun MainScreen() {
                     devices = devices, 
                     logs = logs,
                     selectedDeviceUid = selectedDeviceUid,
-                    onDeviceSelected = { selectedDeviceUid = it }
+                    onDeviceSelected = { selectedDeviceUid = it },
+                    onDeviceSave = { saveDevice(it) },
+                    onDeviceRemove = { removeDevice(it) },
+                    onDeviceConnect = { 
+                        selectedDeviceUid = it
+                        bluetoothService?.connect(it) 
+                    },
+                    onDeviceDisconnect = { bluetoothService?.disconnect() },
+                    onDeviceMove = { uid, up -> moveDevice(uid, up) }
                 )
                 FooterBar(onSendMessage = { msg ->
                     bluetoothService?.sendData(msg)
@@ -789,7 +920,12 @@ fun MainContent(
     devices: List<Device>, 
     logs: List<String>,
     selectedDeviceUid: String?,
-    onDeviceSelected: (String) -> Unit
+    onDeviceSelected: (String) -> Unit,
+    onDeviceSave: (Device) -> Unit,
+    onDeviceRemove: (String) -> Unit,
+    onDeviceConnect: (String) -> Unit,
+    onDeviceDisconnect: () -> Unit,
+    onDeviceMove: (String, Boolean) -> Unit
 ) {
     Column(modifier = modifier
         .fillMaxSize()
@@ -799,7 +935,12 @@ fun MainContent(
         DeviceSelector(
             devices = devices, 
             selectedDeviceUid = selectedDeviceUid,
-            onDeviceSelected = onDeviceSelected
+            onDeviceSelected = onDeviceSelected,
+            onDeviceSave = onDeviceSave,
+            onDeviceRemove = onDeviceRemove,
+            onDeviceConnect = onDeviceConnect,
+            onDeviceDisconnect = onDeviceDisconnect,
+            onDeviceMove = onDeviceMove
         )
 
         Spacer(modifier = Modifier.height(6.dp))
@@ -813,27 +954,53 @@ fun MainContent(
 fun DeviceSelector(
     devices: List<Device>,
     selectedDeviceUid: String?,
-    onDeviceSelected: (String) -> Unit
+    onDeviceSelected: (String) -> Unit,
+    onDeviceSave: (Device) -> Unit,
+    onDeviceRemove: (String) -> Unit,
+    onDeviceConnect: (String) -> Unit,
+    onDeviceDisconnect: () -> Unit,
+    onDeviceMove: (String, Boolean) -> Unit
 ) {
     Column {
         LazyRow(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            items(devices) { d ->
+            items(devices, key = { it.uid }) { d ->
                 DeviceCard(
                     device = d, 
                     isSelected = d.uid == selectedDeviceUid,
-                    onClick = { onDeviceSelected(d.uid) }
+                    onClick = { onDeviceSelected(d.uid) },
+                    onSave = { onDeviceSave(d) },
+                    onRemove = { onDeviceRemove(d.uid) },
+                    onConnect = { onDeviceConnect(d.uid) },
+                    onDisconnect = onDeviceDisconnect,
+                    onMove = { up -> onDeviceMove(d.uid, up) },
+                    isFirst = devices.firstOrNull()?.uid == d.uid,
+                    isLast = devices.lastOrNull()?.uid == d.uid
                 )
             }
         }
     }
 }
 
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
-fun DeviceCard(device: Device, isSelected: Boolean, onClick: () -> Unit) {
+fun DeviceCard(
+    device: Device, 
+    isSelected: Boolean, 
+    onClick: () -> Unit, 
+    onSave: () -> Unit,
+    onRemove: () -> Unit,
+    onConnect: () -> Unit,
+    onDisconnect: () -> Unit,
+    onMove: (Boolean) -> Unit,
+    isFirst: Boolean,
+    isLast: Boolean
+) {
     val colors = androidx.compose.material3.MaterialTheme.colorScheme
     val isOnline = device.status == "ONLINE"
     val isLinking = device.status == "LINKING"
-    
+
+    var showMenu by remember { mutableStateOf(false) }
+
     // Selection feedback: color and border intensity
     val containerColor = when {
         isOnline -> colors.primary.copy(alpha = 0.25f)
@@ -849,7 +1016,10 @@ fun DeviceCard(device: Device, isSelected: Boolean, onClick: () -> Unit) {
     Card(
         modifier = Modifier
             .width(192.dp)
-            .clickable { onClick() },
+            .combinedClickable(
+                onClick = onClick,
+                onLongClick = { showMenu = true }
+            ),
         shape = RoundedCornerShape(12.dp),
         colors = CardDefaults.cardColors(containerColor = containerColor),
         elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
@@ -857,6 +1027,52 @@ fun DeviceCard(device: Device, isSelected: Boolean, onClick: () -> Unit) {
         Column(modifier = Modifier
             .border(1.dp, borderColor, shape = RoundedCornerShape(12.dp))
             .padding(horizontal = 8.dp, vertical = 8.dp)) {
+
+            // Dropdown Menu for Actions
+            DropdownMenu(
+                expanded = showMenu,
+                onDismissRequest = { showMenu = false }
+            ) {
+                if (isOnline || isLinking) {
+                    DropdownMenuItem(
+                        text = { Text("断开 (Disconnect)") },
+                        onClick = { onDisconnect(); showMenu = false },
+                        leadingIcon = { Icon(Icons.Default.BluetoothDisabled, contentDescription = null) }
+                    )
+                } else {
+                    DropdownMenuItem(
+                        text = { Text("连接 (Connect)") },
+                        onClick = { onConnect(); showMenu = false },
+                        leadingIcon = { Icon(Icons.Default.BluetoothConnected, contentDescription = null) }
+                    )
+                }
+                DropdownMenuItem(
+                    text = { Text("保存设备 (Save Device)") },
+                    onClick = { onSave(); showMenu = false },
+                    leadingIcon = { Icon(Icons.Default.Save, contentDescription = null) }
+                )
+                if (!isFirst) {
+                    DropdownMenuItem(
+                        text = { Text("向左移动 (Move Left)") },
+                        onClick = { onMove(true); showMenu = false },
+                        leadingIcon = { Icon(Icons.Default.ArrowBack, contentDescription = null) }
+                    )
+                }
+                if (!isLast) {
+                    DropdownMenuItem(
+                        text = { Text("向右移动 (Move Right)") },
+                        onClick = { onMove(false); showMenu = false },
+                        leadingIcon = { Icon(Icons.Default.ArrowForward, contentDescription = null) }
+                    )
+                }
+                Divider()
+                DropdownMenuItem(
+                    text = { Text("删除 (Remove)", color = colors.error) },
+                    onClick = { onRemove(); showMenu = false },
+                    leadingIcon = { Icon(Icons.Default.Delete, contentDescription = null, tint = colors.error) }
+                )
+            }
+
             Row(horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.Top, modifier = Modifier.fillMaxWidth()) {
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
@@ -1158,14 +1374,11 @@ data class Device(
     val status: String,
     val signal: String,
     val battery: String,
-    val locked: Boolean = false,
-    val gps: Boolean = false
+    val locked: Boolean,
+    val gps: Boolean
 )
 
-fun sampleDevices(): List<Device> {
-    return emptyList()
-}
-
+// Sample logs for preview
 fun sampleLogs(): List<String> = emptyList()
 
 @Preview(showBackground = true, widthDp = 480, heightDp = 1080)
