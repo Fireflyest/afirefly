@@ -1,5 +1,6 @@
 package io.github.fireflyest.afirefly
 
+import android.annotation.SuppressLint
 import android.app.Service
 import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothGatt
@@ -33,6 +34,9 @@ class BluetoothLeService : Service() {
 
     private val _receivedData = MutableSharedFlow<ByteArray>(extraBufferCapacity = 64)
     val receivedData: SharedFlow<ByteArray> = _receivedData
+
+    private val _writeResult = MutableSharedFlow<Pair<ByteArray, Int>>(extraBufferCapacity = 64)
+    val writeResult: SharedFlow<Pair<ByteArray, Int>> = _writeResult
 
     private val binder = LocalBinder()
 
@@ -70,6 +74,7 @@ class BluetoothLeService : Service() {
         try {
             val device = bluetoothAdapter!!.getRemoteDevice(address)
             _connectionState.value = STATE_CONNECTING
+            @SuppressLint("MissingPermission")
             bluetoothGatt = device.connectGatt(this, false, gattCallback)
         } catch (exception: IllegalArgumentException) {
             Log.w(TAG, "Device not found with provided address.")
@@ -78,6 +83,7 @@ class BluetoothLeService : Service() {
         return true
     }
 
+    @SuppressLint("MissingPermission")
     fun disconnect() {
         if (bluetoothGatt == null) {
             Log.w(TAG, "BluetoothGatt not initialized")
@@ -86,12 +92,14 @@ class BluetoothLeService : Service() {
         bluetoothGatt?.disconnect()
     }
 
+    @SuppressLint("MissingPermission")
     private fun close() {
         bluetoothGatt?.close()
         bluetoothGatt = null
         // Do not clear _discoveredServices here to avoid transient UI clearing
     }
 
+    @SuppressLint("MissingPermission")
     fun writeCharacteristic(characteristic: BluetoothGattCharacteristic, data: ByteArray) {
         if (bluetoothGatt == null) return
         @Suppress("DEPRECATION")
@@ -108,6 +116,7 @@ class BluetoothLeService : Service() {
         _discoveredServices.value = emptyList()
     }
 
+    @SuppressLint("MissingPermission")
     fun enableNotifications(serviceUuid: UUID, charUuid: UUID) {
         val gatt = bluetoothGatt ?: return
         val service = gatt.getService(serviceUuid) ?: return
@@ -157,6 +166,7 @@ class BluetoothLeService : Service() {
     }
 
     private val gattCallback = object : BluetoothGattCallback() {
+        @SuppressLint("MissingPermission")
         override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
             if (newState == BluetoothProfile.STATE_CONNECTED) {
                 _connectionState.value = STATE_CONNECTED
@@ -199,6 +209,18 @@ class BluetoothLeService : Service() {
         override fun onCharacteristicRead(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic, status: Int) {
             if (status == BluetoothGatt.GATT_SUCCESS) {
                 broadcastUpdate(characteristic)
+            }
+        }
+
+        @Deprecated("Deprecated in Java")
+        @Suppress("DEPRECATION")
+        override fun onCharacteristicWrite(
+            gatt: BluetoothGatt?,
+            characteristic: BluetoothGattCharacteristic?,
+            status: Int
+        ) {
+            characteristic?.value?.let { 
+                _writeResult.tryEmit(it to status)
             }
         }
     }

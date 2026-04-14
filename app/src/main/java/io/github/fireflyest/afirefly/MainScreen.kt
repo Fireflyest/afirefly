@@ -426,6 +426,11 @@ fun MainScreen() {
                     isHex = isHexGlobal,
                     onHexChanged = { isHexGlobal = it },
                     onSendMessage = { msg ->
+                        if (serviceState != BluetoothLeService.STATE_CONNECTED) {
+                            Toast.makeText(ctx, "未连接设备 (Not connected)", Toast.LENGTH_SHORT).show()
+                            return@FooterBar
+                        }
+
                         val currentDevice = devices.find { it.uid == selectedDeviceUid }
                         val sUuidStr = currentDevice?.serviceUuid
                         val cUuidStr = currentDevice?.charUuid
@@ -1327,6 +1332,8 @@ fun LogRow(text: String) {
                     label.contains("WARN") || label.contains("ERROR") -> colors.error
                     label.contains("TX") -> Color(0xFF22A6B3) // Blue for TX
                     label.contains("RX") -> Color(0xFF4CAF50) // Green for RX
+                    label.contains("ERROR") -> MaterialTheme.colorScheme.error
+                    label.contains("INFO") -> MaterialTheme.colorScheme.primary
                     label.contains("KERN") || label.contains("NET") || label.contains("TELEMETRY") -> colors.primary
                     label.contains(">>") -> colors.onSurface
                     else -> colors.outline
@@ -1565,6 +1572,10 @@ fun MainScreenPreview() {
         MainScreen()
     }
 }
+
+
+
+
 
 
 
