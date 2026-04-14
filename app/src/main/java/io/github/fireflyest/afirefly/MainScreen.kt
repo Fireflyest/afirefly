@@ -1242,7 +1242,7 @@ fun DeviceCard(
 
             Spacer(modifier = Modifier.height(6.dp))
 
-            // icons row: lock, battery, signal, gps (grouped with consistent spacing)
+                // icons row: lock, battery, signal, gps (grouped with consistent spacing)
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
                 // lock/unlock group
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -1322,6 +1322,8 @@ fun LogRow(text: String) {
                 append(" ")
                 val labelColor = when {
                     label.contains("WARN") || label.contains("ERROR") -> colors.error
+                    label.contains("TX") -> Color(0xFF22A6B3) // Blue for TX
+                    label.contains("RX") -> Color(0xFF4CAF50) // Green for RX
                     label.contains("KERN") || label.contains("NET") || label.contains("TELEMETRY") -> colors.primary
                     label.contains(">>") -> colors.onSurface
                     else -> colors.outline
@@ -1560,6 +1562,8 @@ fun MainScreenPreview() {
         MainScreen()
     }
 }
+
+
 
 
 
