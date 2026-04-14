@@ -33,6 +33,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.*
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -324,9 +325,11 @@ fun MainScreen() {
     // Update device status based on Bluetooth service state
     LaunchedEffect(serviceState) {
         val timestamp = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date())
+        val currentDeviceName = devices.find { it.uid == selectedDeviceUid }?.name ?: "Unknown"
+        
         when (serviceState) {
             BluetoothLeService.STATE_CONNECTED -> {
-                logs.add("$timestamp INFO: GATT connection established.")
+                logs.add("$timestamp INFO: Connection established with $currentDeviceName")
                 devices.forEachIndexed { index, device ->
                     if (device.uid == selectedDeviceUid || device.status == "LINKING") {
                         devices[index] = device.copy(status = "ONLINE")
@@ -334,7 +337,7 @@ fun MainScreen() {
                 }
             }
             BluetoothLeService.STATE_CONNECTING -> {
-                logs.add("$timestamp INFO: Attempting to connect...")
+                logs.add("$timestamp INFO: Attempting to connect to $currentDeviceName...")
                 devices.forEachIndexed { index, device ->
                     if (device.uid == selectedDeviceUid) {
                         devices[index] = device.copy(status = "LINKING")
@@ -344,7 +347,7 @@ fun MainScreen() {
             BluetoothLeService.STATE_DISCONNECTED -> {
                 // Only log if it's a real transition from a connected/connecting state, not at startup
                 if (previousServiceState != null && previousServiceState != BluetoothLeService.STATE_DISCONNECTED) {
-                    logs.add("$timestamp INFO: GATT disconnected.")
+                    logs.add("$timestamp INFO: Disconnected from $currentDeviceName")
                 }
                 devices.forEachIndexed { index, device ->
                     if (device.uid == selectedDeviceUid || device.status == "ONLINE") {
@@ -1184,17 +1187,17 @@ fun DeviceCard(
                     DropdownMenuItem(
                         text = { Text("向左移动 (Move Left)") },
                         onClick = { onMove(true); showMenu = false },
-                        leadingIcon = { Icon(Icons.Default.ArrowBack, contentDescription = null) }
+                        leadingIcon = { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = null) }
                     )
                 }
                 if (!isLast) {
                     DropdownMenuItem(
                         text = { Text("向右移动 (Move Right)") },
                         onClick = { onMove(false); showMenu = false },
-                        leadingIcon = { Icon(Icons.Default.ArrowForward, contentDescription = null) }
+                        leadingIcon = { Icon(Icons.AutoMirrored.Filled.ArrowForward, contentDescription = null) }
                     )
                 }
-                Divider()
+                HorizontalDivider()
                 DropdownMenuItem(
                     text = { Text("删除 (Remove)", color = colors.error) },
                     onClick = { onRemove(); showMenu = false },
@@ -1562,8 +1565,6 @@ fun MainScreenPreview() {
         MainScreen()
     }
 }
-
-
 
 
 
