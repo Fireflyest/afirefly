@@ -139,8 +139,8 @@ fun MainScreen() {
                         battery = obj.optString("battery", "--"),
                         locked = obj.optBoolean("locked", false),
                         gps = obj.optBoolean("gps", false),
-                        serviceUuid = obj.optString("serviceUuid", null),
-                        charUuid = obj.optString("charUuid", null)
+                        serviceUuid = if (obj.isNull("serviceUuid")) null else obj.optString("serviceUuid"),
+                        charUuid = if (obj.isNull("charUuid")) null else obj.optString("charUuid")
                     ))
                 }
                 devices.clear()
@@ -236,12 +236,19 @@ fun MainScreen() {
 
     // Track previous state to avoid redundant logs on startup
     var previousServiceState by remember { mutableStateOf<Int?>(null) }
+    
+    // Global Hex toggle state - can be lifted or kept here if it affects both display and sending
+    var isHexGlobal by remember { mutableStateOf(false) }
 
-    LaunchedEffect(bluetoothService) {
+    LaunchedEffect(bluetoothService, isHexGlobal) {
         bluetoothService?.receivedData?.collect { data ->
             val timestamp = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date())
-            val hexString = data.joinToString("") { "%02X ".format(it) }
-            logs.add("$timestamp RX: $hexString")
+            val displayData = if (isHexGlobal) {
+                data.joinToString("") { "%02X ".format(it) }
+            } else {
+                String(data, Charsets.UTF_8)
+            }
+            logs.add("$timestamp RX: $displayData")
         }
     }
 
@@ -413,15 +420,27 @@ fun MainScreen() {
                 )
                 FooterBar(
                     quickCommands = quickCommands,
+                    isHex = isHexGlobal,
+                    onHexChanged = { isHexGlobal = it },
                     onSendMessage = { msg ->
                         val currentDevice = devices.find { it.uid == selectedDeviceUid }
                         val sUuidStr = currentDevice?.serviceUuid
                         val cUuidStr = currentDevice?.charUuid
                         
-                        if (sUuidStr != null && cUuidStr != null) {
-                            bluetoothService?.sendData(UUID.fromString(sUuidStr), UUID.fromString(cUuidStr), msg)
+                        val dataToSend = if (isHexGlobal) {
+                            try {
+                                msg.filter { !it.isWhitespace() }.chunked(2).map { it.toInt(16).toByte() }.toByteArray()
+                            } catch (e: Exception) {
+                                msg.toByteArray()
+                            }
                         } else {
-                            bluetoothService?.sendData(msg)
+                            msg.toByteArray()
+                        }
+
+                        if (sUuidStr != null && cUuidStr != null) {
+                            bluetoothService?.sendData(UUID.fromString(sUuidStr), UUID.fromString(cUuidStr), dataToSend)
+                        } else {
+                            bluetoothService?.sendData(dataToSend)
                         }
                         
                         val timestamp = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date())
@@ -451,7 +470,11 @@ fun SlimOutlinedTextField(
     maxLines: Int = Int.MAX_VALUE,
     // avoid imposing a large lineHeight here; vertical centering for single-line inputs
     // is handled by the container. For multi-line inputs we align top and add small padding.
-    textStyle: TextStyle = TextStyle(fontFamily = FontFamily.Monospace, fontSize = 13.sp),
+    textStyle: TextStyle = TextStyle(
+        fontFamily = FontFamily.Monospace,
+        fontSize = 13.sp,
+        color = MaterialTheme.colorScheme.onSurface // Force use of onSurface color for readability
+    ),
     shape: androidx.compose.foundation.shape.CornerBasedShape = RoundedCornerShape(8.dp),
     borderColor: Color,
     backgroundColor: Color
@@ -471,13 +494,14 @@ fun SlimOutlinedTextField(
             .padding(horizontal = 10.dp),
         contentAlignment = if (useCenter) Alignment.CenterStart else Alignment.TopStart
     ) {
+        val mergedStyle = textStyle.copy(color = MaterialTheme.colorScheme.onSurface)
         BasicTextField(
             value = value,
             onValueChange = onValueChange,
             singleLine = singleLine,
             maxLines = maxLines,
             onTextLayout = onTextLayout,
-            textStyle = textStyle,
+            textStyle = mergedStyle,
             cursorBrush = SolidColor(borderColor),
             // allow multi-line to wrap content; single-line will be vertically centered by
             // the decoration box filling available height
@@ -1325,6 +1349,8 @@ fun LogRow(text: String) {
 @OptIn(ExperimentalMaterial3Api::class, androidx.compose.foundation.ExperimentalFoundationApi::class)
 fun FooterBar(
     quickCommands: List<String>,
+    isHex: Boolean,
+    onHexChanged: (Boolean) -> Unit,
     onSendMessage: (String) -> Unit = {},
     onSaveCommand: (String) -> Unit = {},
     onRemoveCommand: (String) -> Unit = {}
@@ -1335,13 +1361,24 @@ fun FooterBar(
         .fillMaxWidth()
         .background(colors.surface.copy(alpha = 0.9f))
         .padding(6.dp), verticalAlignment = Alignment.Bottom) {
-        // left toggle button (attached to input) - visual toggle
-        var isHex by remember { mutableStateOf(false) }
-        // input state (was previously a fixed empty string) -> now editable
+        // left toggle button (attached to input)
+        // input state
         var inputText by remember { mutableStateOf("") }
         var showQuickDialog by remember { mutableStateOf(false) }
+
+        // Hex validation: Check if input is valid hex (allowing spaces)
+        val isInputValid = remember(inputText, isHex) {
+            if (isHex && inputText.isNotBlank()) {
+                // Remove spaces and check if remaining is even length and contains only 0-9, A-F
+                val filtered = inputText.filter { !it.isWhitespace() }
+                filtered.all { it in '0'..'9' || it in 'a'..'f' || it in 'A'..'F' } && filtered.length % 2 == 0
+            } else {
+                true
+            }
+        }
+
         val leftBg = if (isHex) colors.primary else colors.surfaceVariant
-        // make the 0x label highly legible when active: use onPrimary (contrasting with colors.primary)
+        // make the 0x label highly legible when active
         val leftTextColor = if (isHex) colors.onPrimary else colors.outline
 
         Box(modifier = Modifier
@@ -1356,7 +1393,7 @@ fun FooterBar(
                     bottomEnd = 0.dp
                 )
             )
-            .clickable { isHex = !isHex }
+            .clickable { onHexChanged(!isHex) }
             .padding(horizontal = 12.dp), contentAlignment = Alignment.Center) {
             Text(
                 text = "0x",
@@ -1394,7 +1431,7 @@ fun FooterBar(
                 maxLines = 6,
                 textStyle = TextStyle(fontFamily = FontFamily.Monospace, fontSize = 14.sp, lineHeight = 18.sp),
                 shape = RoundedCornerShape(topStart = 0.dp, bottomStart = 0.dp, topEnd = 8.dp, bottomEnd = 8.dp),
-                borderColor = colors.outline,
+                borderColor = if (isInputValid) colors.outline else colors.error,
                 backgroundColor = colors.surface
             )
 
@@ -1446,8 +1483,13 @@ fun FooterBar(
                         modifier = Modifier
                             .fillMaxWidth()
                             .height(44.dp) // Explicitly set height
-                            .background(colors.surfaceVariant, shape = RoundedCornerShape(8.dp))
+                            .alpha(if (isInputValid) 1f else 0.5f)
+                            .background(
+                                if (isInputValid) colors.surfaceVariant else colors.surfaceVariant.copy(alpha = 0.3f), 
+                                shape = RoundedCornerShape(8.dp)
+                            )
                             .combinedClickable(
+                                enabled = isInputValid,
                                 onClick = {
                                     onSendMessage(inputText)
                                     inputText = ""
@@ -1460,7 +1502,7 @@ fun FooterBar(
                     ) {
                         Text(
                             "SEND",
-                            color = colors.onSurface,
+                            color = if (isInputValid) colors.onSurface else colors.onSurface.copy(alpha = 0.5f),
                             fontWeight = FontWeight.Bold,
                             fontSize = 14.sp
                         )
@@ -1518,5 +1560,7 @@ fun MainScreenPreview() {
         MainScreen()
     }
 }
+
+
 
 

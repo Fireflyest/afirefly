@@ -131,18 +131,28 @@ class BluetoothLeService : Service() {
         }
     }
 
+    // Deprecated String-based sendData for internal compatibility if needed, 
+    // but preferred to use ByteArray version.
     fun sendData(serviceUuid: UUID, charUuid: UUID, data: String) {
-        val gatt = bluetoothGatt ?: return
-        val service = gatt.getService(serviceUuid) ?: return
-        val characteristic = service.getCharacteristic(charUuid) ?: return
-        writeCharacteristic(characteristic, data.toByteArray())
+        sendData(serviceUuid, charUuid, data.toByteArray())
     }
 
     fun sendData(data: String) {
+        sendData(data.toByteArray())
+    }
+
+    fun sendData(serviceUuid: UUID, charUuid: UUID, data: ByteArray) {
+        val gatt = bluetoothGatt ?: return
+        val service = gatt.getService(serviceUuid) ?: return
+        val characteristic = service.getCharacteristic(charUuid) ?: return
+        writeCharacteristic(characteristic, data)
+    }
+
+    fun sendData(data: ByteArray) {
         val service = bluetoothGatt?.getService(BluetoothConstants.SERVICE_UUID) ?: return
         val characteristic = service.getCharacteristic(BluetoothConstants.TX_CHARACTERISTIC_UUID)
         if (characteristic != null) {
-            writeCharacteristic(characteristic, data.toByteArray())
+            writeCharacteristic(characteristic, data)
         }
     }
 
@@ -165,17 +175,26 @@ class BluetoothLeService : Service() {
                 val services = gatt.services ?: emptyList()
                 if (services.isNotEmpty()) {
                     _discoveredServices.value = services
+
+                    // Automatically enable notifications for the default RX characteristic if available
+                    val service = gatt.getService(BluetoothConstants.SERVICE_UUID)
+                    val rxChar = service?.getCharacteristic(BluetoothConstants.RX_CHARACTERISTIC_UUID)
+                    if (rxChar != null) {
+                        enableNotifications(BluetoothConstants.SERVICE_UUID, BluetoothConstants.RX_CHARACTERISTIC_UUID)
+                    }
                 }
             } else {
                 Log.w(TAG, "onServicesDiscovered received: $status")
             }
         }
 
+        @Deprecated("Deprecated in Java")
         @Suppress("DEPRECATION")
         override fun onCharacteristicChanged(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic) {
             broadcastUpdate(characteristic)
         }
 
+        @Deprecated("Deprecated in Java")
         @Suppress("DEPRECATION")
         override fun onCharacteristicRead(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic, status: Int) {
             if (status == BluetoothGatt.GATT_SUCCESS) {
