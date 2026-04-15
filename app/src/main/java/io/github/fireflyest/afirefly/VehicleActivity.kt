@@ -48,6 +48,7 @@ class VehicleActivity : ComponentActivity() {
         override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
             val binder = service as BluetoothLeService.LocalBinder
             val bService = binder.getService()
+            bService.initialize() // Ensure initialized
             _bluetoothService.value = bService
             
             // Connect to device if address is available and not already connected
@@ -99,10 +100,60 @@ class VehicleActivity : ComponentActivity() {
 @Composable
 fun VehicleScreen(service: BluetoothLeService?, deviceName: String?, deviceAddress: String?) {
     // UI state for joysticks
-    var leftOffset by remember { mutableStateOf(Offset.Zero) }
+    // throttle (left stick Y) starts at 0 (bottom). Map 0..100% to offset.
+    // In our joystick mapping in detectDragGestures: offset.y of (radius-knobRadius) is bottom (-1.0 in normalized)
+    // Actually, let's just initialize it to the bottom position:
+    // radius = 88.dp, knobRadius = 28.dp -> maxDist = 60.dp
+    // But we don't have density here easily. 
+    // Let's use normalized coordinates in Joystick if possible, or just set it to a large enough value.
+    // Re-evaluating: let's change how Joystick initializes or how VehicleScreen starts.
+    
+    // In Joystick component: onValueChange(Offset(offset.x / maxDist, -offset.y / maxDist))
+    // If we want throttle 0, we want -offset.y / maxDist = 0? 
+    // Wait, the current logic is:
+    // val throttle = ((-leftOffset.y + 1f) / 2f * 100f).coerceIn(0f, 100f)
+    // If leftOffset.y = 1f (bottom), throttle = ((-1 + 1)/2)*100 = 0.
+    // If leftOffset.y = -1f (top), throttle = ((1 + 1)/2)*100 = 100.
+    // If leftOffset.y = 0f (center), throttle = ((0 + 1)/2)*100 = 50.
+    // So we want leftOffset.y to start at 1f.
+    var leftOffset by remember { mutableStateOf(Offset(0f, 1f)) }
     var rightOffset by remember { mutableStateOf(Offset.Zero) }
 
     val connectionState by (service?.connectionState ?: MutableStateFlow(BluetoothLeService.STATE_DISCONNECTED)).collectAsState()
+    
+    // Remote states from drone
+    var remoteTelemetry by remember { mutableStateOf(FlightCommands.Telemetry()) }
+
+    // Listen to incoming telemetry
+    LaunchedEffect(service) {
+        service?.receivedData?.collect { data ->
+            FlightCommands.parseTelemetry(data)?.let {
+                remoteTelemetry = it
+            }
+        }
+    }
+
+    // Periodically send joystick data if connected
+    LaunchedEffect(leftOffset, rightOffset, connectionState) {
+        if (connectionState == BluetoothLeService.STATE_CONNECTED && service != null) {
+            // throttle (forward/backward on left stick Y)
+            // leftOffset.y ranges from -1 to 1 (0 at center in the Joystick component)
+            // Typically: -1 is full up (forward push), 1 is full down (backward pull).
+            // Map leftOffset.y: -1 (UP) -> 100.0 (FULL), 1 (DOWN) -> 0.0 (OFF)
+            val throttle = ((-leftOffset.y + 1f) / 2f * 100f).coerceIn(0f, 100f)
+            service.sendData(FlightCommands.setThrottle(throttle))
+
+            // Yaw (Rotation) is often on left stick X
+            // Map leftOffset.x (-1..1) to attitude yaw rate or direct attitude target
+            // Let's send it via attitude command or move depending on how your firmware handles it.
+            // For now, let's keep it simple: Left stick Y = Throttle, Right stick = Pitch/Roll.
+            
+            // Map right stick to Move (forward, right)
+            // forward = -offset.y, right = offset.x
+            // coercion to ensure within range -1..1
+            service.sendData(FlightCommands.move((-rightOffset.y).coerceIn(-1f, 1f), (rightOffset.x).coerceIn(-1f, 1f)))
+        }
+    }
 
     Box(
         modifier = Modifier
@@ -126,19 +177,20 @@ fun VehicleScreen(service: BluetoothLeService?, deviceName: String?, deviceAddre
             }
     ) {
         // 1. Top Bar
-        VehicleTopBar(service, deviceName, deviceAddress, connectionState)
+        VehicleTopBar(service, deviceName, deviceAddress, connectionState, remoteTelemetry)
 
         // 2. HUD Elements (Left & Right)
-        VehicleHudOverlays()
+        VehicleHudOverlays(remoteTelemetry)
 
         // 3. Central HUD Elements (Compass & Radar-like)
-        VehicleCentralHud()
+        VehicleCentralHud(remoteTelemetry)
 
         // 4. Main Controls (Joysticks)
         Box(modifier = Modifier.fillMaxSize().padding(horizontal = 48.dp, vertical = 32.dp)) {
             // Left Stick - Throttle (Y stays, X/Yaw springs back)
             Joystick(
                 modifier = Modifier.align(Alignment.BottomStart),
+                initialOffset = leftOffset, // Pass initial offset
                 isSpringy = true,   // X axis (Yaw) -> Springs back
                 isSpringyY = false, // Y axis (Throttle) -> Stays put
                 onValueChange = { leftOffset = it }
@@ -153,18 +205,30 @@ fun VehicleScreen(service: BluetoothLeService?, deviceName: String?, deviceAddre
         }
 
         // 5. Center Button Grid
-        VehicleControlButtonGrid(modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 40.dp))
+        VehicleControlButtonGrid(modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 40.dp), service = service)
 
         // 6. Bottom Telemetry Bar
-        VehicleBottomBar(modifier = Modifier.align(Alignment.BottomCenter))
+        VehicleBottomBar(modifier = Modifier.align(Alignment.BottomCenter), telemetry = remoteTelemetry)
     }
 }
 
 @Composable
-fun VehicleTopBar(service: BluetoothLeService?, deviceName: String?, deviceAddress: String?, connectionState: Int) {
+fun VehicleTopBar(
+    service: BluetoothLeService?, 
+    deviceName: String?, 
+    deviceAddress: String?, 
+    connectionState: Int,
+    telemetry: FlightCommands.Telemetry
+) {
     var modeExpanded by remember { mutableStateOf(false) }
-    var currentMode by remember { mutableStateOf("STABILIZE") }
-    val modes = listOf("STABILIZE", "ALT HOLD", "LOITER", "AUTO", "RTL", "LAND")
+    var currentMode by remember { mutableStateOf("DIRECT") } // Set default to DIRECT as requested
+    val modes = listOf(
+        "DIRECT" to FlightCommands.CONTROL_MODE_DIRECT,
+        "STABILIZED" to FlightCommands.CONTROL_MODE_STABILIZED,
+        "ALTITUDE" to FlightCommands.CONTROL_MODE_ALTITUDE,
+        "VELOCITY" to FlightCommands.CONTROL_MODE_VELOCITY,
+        "POSITION" to FlightCommands.CONTROL_MODE_POSITION
+    )
 
     val isConnected = connectionState == BluetoothLeService.STATE_CONNECTED
 
@@ -233,19 +297,21 @@ fun VehicleTopBar(service: BluetoothLeService?, deviceName: String?, deviceAddre
                         onDismissRequest = { modeExpanded = false },
                         modifier = Modifier.background(Color(0xFF181C22))
                     ) {
-                        modes.forEach { mode ->
+                        modes.forEach { (modeLabel, modeValue) ->
                             DropdownMenuItem(
                                 text = { 
                                     Text(
-                                        mode, 
-                                        color = if (mode == currentMode) Color(0xFF7BDB80) else Color.White,
+                                        modeLabel, 
+                                        color = if (modeLabel == currentMode) Color(0xFF7BDB80) else Color.White,
                                         fontFamily = FontFamily.Monospace,
                                         fontSize = 13.sp
                                     ) 
                                 },
                                 onClick = {
-                                    currentMode = mode
+                                    currentMode = modeLabel
                                     modeExpanded = false
+                                    // Send mode change command
+                                    service?.sendData(FlightCommands.setMode(modeValue))
                                 }
                             )
                         }
@@ -297,9 +363,9 @@ fun VehicleTopBar(service: BluetoothLeService?, deviceName: String?, deviceAddre
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-            HudStatusItem(Icons.Default.BatteryFull, "94%", Color(0xFF7BDB80))
-            HudStatusItem(Icons.Default.SignalCellularAlt, "48ms", Color(0xFF7BDB80))
-            HudStatusItem(Icons.Default.SatelliteAlt, "18", Color(0xFF7BDB80))
+            HudStatusItem(Icons.Default.BatteryFull, "${telemetry.battery}%", if (telemetry.battery < 20) Color.Red else Color(0xFF7BDB80))
+            HudStatusItem(Icons.Default.SignalCellularAlt, "${telemetry.rssi}dBm", Color(0xFF7BDB80))
+            HudStatusItem(Icons.Default.SatelliteAlt, "${telemetry.satellites}", Color(0xFF7BDB80))
         }
 
         Row(
@@ -334,8 +400,8 @@ fun HudIconButton(icon: ImageVector) {
 }
 
 @Composable
-fun VehicleHudOverlays() {
-    // Left vertical scale
+fun VehicleHudOverlays(telemetry: FlightCommands.Telemetry) {
+    // Left vertical scale (e.g. Battery mapping or Throttle)
     Box(
         modifier = Modifier
             .fillMaxHeight()
@@ -359,6 +425,8 @@ fun VehicleHudOverlays() {
                         strokeWidth = 1.dp.toPx()
                     )
                 }
+
+                // Draw indicator for relative altitude/throttle? Let's skip for brevity.
             }
             Column(
                 modifier = Modifier.fillMaxHeight(0.4f),
@@ -418,10 +486,7 @@ fun VehicleHudOverlays() {
 }
 
 @Composable
-fun VehicleCentralHud() {
-    // Simulated quaternion for now (W, X, Y, Z) - in real use, collect from service
-    val quat = remember { floatArrayOf(1f, 0.1f, 0.0f, 0.2f) }
-    
+fun VehicleCentralHud(telemetry: FlightCommands.Telemetry) {
     Box(modifier = Modifier.fillMaxSize().padding(top = 24.dp, bottom = 40.dp)) {
         // Left Attitude HUD (3D perspective)
         Box(
@@ -431,7 +496,7 @@ fun VehicleCentralHud() {
                 .size(128.dp),
             contentAlignment = Alignment.Center
         ) {
-            Attitude3D(quat)
+            Attitude3D(telemetry.quaternion)
         }
 
         // Right Radar-like
@@ -461,12 +526,15 @@ fun VehicleCentralHud() {
 
 @Composable
 fun Attitude3D(quat: FloatArray) {
+    // Safety check for quat size
+    val finalQuat = if (quat.size == 4) quat else floatArrayOf(1f, 0f, 0f, 0f)
+    
     // Convert quaternion to Euler angles (simplified)
     // Pitch (around X), Roll (around Y), Yaw (around Z)
-    val w = quat[0]
-    val x = quat[1]
-    val y = quat[2]
-    val z = quat[3]
+    val w = finalQuat[0]
+    val x = finalQuat[1]
+    val y = finalQuat[2]
+    val z = finalQuat[3]
 
     val roll = atan2(2f * (w * x + y * z), 1f - 2f * (x * x + y * y)) * (180f / PI.toFloat())
     val pitch = asin((2f * (w * y - z * x)).coerceIn(-1f, 1f)) * (180f / PI.toFloat())
@@ -641,6 +709,7 @@ fun Attitude3D(quat: FloatArray) {
 @Composable
 fun Joystick(
     modifier: Modifier = Modifier, 
+    initialOffset: Offset = Offset.Zero, // New parameter
     isSpringy: Boolean = true,
     isSpringyY: Boolean = true, // Added Y-axis spring control
     onValueChange: (Offset) -> Unit
@@ -648,6 +717,13 @@ fun Joystick(
     var offset by remember { mutableStateOf(Offset.Zero) }
     val radius = 88.dp
     val knobRadius = 28.dp
+
+    // Initialize offset based on initialOffset and density
+    val density = androidx.compose.ui.platform.LocalDensity.current
+    LaunchedEffect(initialOffset) {
+        val maxDist = with(density) { (radius - knobRadius).toPx() }
+        offset = Offset(initialOffset.x * maxDist, -initialOffset.y * maxDist)
+    }
 
     Box(
         modifier = modifier
@@ -702,14 +778,14 @@ fun Joystick(
 }
 
 @Composable
-fun VehicleControlButtonGrid(modifier: Modifier = Modifier) {
+fun VehicleControlButtonGrid(service: BluetoothLeService?, modifier: Modifier = Modifier) {
     val buttons = listOf(
         Triple("ARM", Icons.Default.LockOpen, Color(0xFFFFB4AB)),
         Triple("DISARM", Icons.Default.Lock, Color(0xFFBECABA)),
         Triple("TAKEOFF", Icons.Default.FileUpload, Color(0xFF7BDB80)),
         Triple("LAND", Icons.Default.FileDownload, Color(0xFF7BDB80)),
         Triple("RTL", Icons.Default.Home, Color(0xFFBECABA)),
-        Triple("HOLD", Icons.Default.Pause, Color(0xFFD8B9FF))
+        Triple("E-STOP", Icons.Default.Report, Color.Red)
     )
 
     Column(modifier = modifier.width(280.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -726,7 +802,16 @@ fun VehicleControlButtonGrid(modifier: Modifier = Modifier) {
                                 if (isTakeoff) Modifier.background(androidx.compose.ui.graphics.Brush.linearGradient(listOf(Color(0xFF7BDB80), Color(0xFF238636))), RoundedCornerShape(8.dp))
                                 else Modifier.border(if (label == "ARM") 2.dp else 1.dp, color.copy(alpha = 0.4f), RoundedCornerShape(8.dp))
                             )
-                            .clickable { },
+                            .clickable { 
+                                when(label) {
+                                    "ARM" -> service?.sendData(FlightCommands.arm())
+                                    "DISARM" -> service?.sendData(FlightCommands.disarm())
+                                    "TAKEOFF" -> service?.sendData(FlightCommands.takeoff(1.0f)) // Default 1m takeoff
+                                    "LAND" -> service?.sendData(FlightCommands.land())
+                                    "E-STOP" -> service?.sendData(FlightCommands.emergencyStop())
+                                    "RTL" -> service?.sendData(FlightCommands.hover()) // RTL maps to hover for now
+                                }
+                            },
                         contentAlignment = Alignment.Center
                     ) {
                         Column(
@@ -756,7 +841,7 @@ fun VehicleControlButtonGrid(modifier: Modifier = Modifier) {
 }
 
 @Composable
-fun VehicleBottomBar(modifier: Modifier = Modifier) {
+fun VehicleBottomBar(modifier: Modifier = Modifier, telemetry: FlightCommands.Telemetry) {
     Box(
         modifier = modifier
             .fillMaxWidth()
@@ -766,9 +851,10 @@ fun VehicleBottomBar(modifier: Modifier = Modifier) {
         contentAlignment = Alignment.Center
     ) {
         Row(horizontalArrangement = Arrangement.spacedBy(32.dp)) {
-            TelemetryItem("QUAT", "W: 0.999 X: 0.002 Y: -0.001 Z: 0.005")
-            TelemetryItem("ALT", "42.45m")
-            TelemetryItem("SPD", "0.00m/s")
+            val q = telemetry.quaternion
+            TelemetryItem("QUAT", String.format("W:%.2f X:%.2f Y:%.2f Z:%.2f", q[0], q[1], q[2], q[3]))
+            TelemetryItem("ALT", String.format("%.2fm", telemetry.altitude))
+            TelemetryItem("SPD", String.format("%.2fm/s", telemetry.velocity))
         }
     }
 }
