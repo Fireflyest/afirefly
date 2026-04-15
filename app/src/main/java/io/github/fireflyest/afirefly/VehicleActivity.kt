@@ -23,7 +23,9 @@ import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.rotate
@@ -36,7 +38,7 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.*
 import io.github.fireflyest.afirefly.ui.theme.AfireflyTheme
 import kotlinx.coroutines.flow.MutableStateFlow
-import kotlin.math.roundToInt
+import kotlin.math.*
 
 class VehicleActivity : ComponentActivity() {
     private val _bluetoothService = mutableStateOf<BluetoothLeService?>(null)
@@ -417,27 +419,19 @@ fun VehicleHudOverlays() {
 
 @Composable
 fun VehicleCentralHud() {
+    // Simulated quaternion for now (W, X, Y, Z) - in real use, collect from service
+    val quat = remember { floatArrayOf(1f, 0.1f, 0.0f, 0.2f) }
+    
     Box(modifier = Modifier.fillMaxSize().padding(top = 24.dp, bottom = 40.dp)) {
-        // Left Compass-like
+        // Left Attitude HUD (3D perspective)
         Box(
             modifier = Modifier
                 .align(Alignment.TopStart)
                 .padding(32.dp)
-                .size(128.dp)
-                .background(Color(0xFF181C22).copy(alpha = 0.4f), RoundedCornerShape(12.dp))
-                .border(1.dp, Color.White.copy(alpha = 0.05f), RoundedCornerShape(12.dp)),
+                .size(128.dp),
             contentAlignment = Alignment.Center
         ) {
-            // SVG-like drawing for orientation
-            Canvas(modifier = Modifier.size(80.dp)) {
-                drawCircle(Color.White.copy(alpha = 0.2f), radius = 30.dp.toPx(), style = Stroke(0.5.dp.toPx()))
-                // Simplified orientation marker
-                rotate(15f) {
-                    drawLine(Color(0xFF7BDB80), Offset(20.dp.toPx(), 20.dp.toPx()), Offset(60.dp.toPx(), 60.dp.toPx()), 2.dp.toPx())
-                    drawLine(Color(0xFF7BDB80), Offset(20.dp.toPx(), 60.dp.toPx()), Offset(60.dp.toPx(), 20.dp.toPx()), 2.dp.toPx())
-                    drawCircle(Color(0xFF7BDB80), 5.dp.toPx())
-                }
-            }
+            Attitude3D(quat)
         }
 
         // Right Radar-like
@@ -460,6 +454,185 @@ fun VehicleCentralHud() {
                     drawCircle(brush)
                 }
                 drawCircle(Color(0xFF7BDB80), 3.dp.toPx())
+            }
+        }
+    }
+}
+
+@Composable
+fun Attitude3D(quat: FloatArray) {
+    // Convert quaternion to Euler angles (simplified)
+    // Pitch (around X), Roll (around Y), Yaw (around Z)
+    val w = quat[0]
+    val x = quat[1]
+    val y = quat[2]
+    val z = quat[3]
+
+    val roll = atan2(2f * (w * x + y * z), 1f - 2f * (x * x + y * y)) * (180f / PI.toFloat())
+    val pitch = asin((2f * (w * y - z * x)).coerceIn(-1f, 1f)) * (180f / PI.toFloat())
+    val yaw = atan2(2f * (w * z + x * y), 1f - 2f * (y * y + z * z)) * (180f / PI.toFloat())
+
+    Box(
+        modifier = Modifier.size(100.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        // 1. Static Coordinated System (Fixed XYZ axes)
+        Canvas(modifier = Modifier.fillMaxSize()) {
+            val center = Offset(size.width / 2, size.height / 2)
+            val axisLength = size.width * 0.45f
+            val axisColor = Color.White.copy(alpha = 0.2f)
+            
+            // X-axis (Right)
+            drawLine(axisColor, center, center.copy(x = center.x + axisLength), 1.dp.toPx())
+            // Y-axis (Forward/Up in 2D projection)
+            drawLine(axisColor, center, center.copy(y = center.y - axisLength), 1.dp.toPx())
+            
+            // Labels for axes
+            drawCircle(axisColor, 2.dp.toPx(), center)
+        }
+
+        // 2. Dynamic Drone Model (Represented by a stylized 3D Drone Shape)
+        Box(
+            modifier = Modifier
+                .size(80.dp)
+                .graphicsLayer {
+                    rotationX = -pitch
+                    rotationY = roll
+                    rotationZ = -yaw
+                    cameraDistance = 12 * density
+                },
+            contentAlignment = Alignment.Center
+        ) {
+            Canvas(modifier = Modifier.fillMaxSize()) {
+                val center = Offset(size.width / 2, size.height / 2)
+                val armLen = size.width * 0.35f
+                val motorRadius = 6.dp.toPx()
+                val bodyWidth = 12.dp.toPx()
+                val bodyHeight = 20.dp.toPx()
+                
+                val accentColor = Color(0xFF7BDB80) // Drone green
+                val frameColor = Color.White.copy(alpha = 0.8f)
+                val bodyColor = Color(0xFF25292E)
+                val bottomSurfaceColor = Color(0xFF15191E)
+                val highlightColor = Color.White.copy(alpha = 0.3f)
+
+                // Draw a shadow/depth for the body to make it look "thick"
+                // This draws a darker version slightly offset to represent the sides/bottom
+                drawRoundRect(
+                    color = bottomSurfaceColor,
+                    topLeft = Offset(center.x - bodyWidth / 2, center.y - bodyHeight / 2 + 4.dp.toPx()),
+                    size = Size(bodyWidth, bodyHeight),
+                    cornerRadius = CornerRadius(4.dp.toPx())
+                )
+
+                // 1. Draw central body (Battery/Flight Controller area)
+                // Main body block (The Top Surface)
+                drawRoundRect(
+                    color = bodyColor,
+                    topLeft = Offset(center.x - bodyWidth / 2, center.y - bodyHeight / 2),
+                    size = Size(bodyWidth, bodyHeight),
+                    cornerRadius = CornerRadius(4.dp.toPx())
+                )
+                
+                // Add a "top bulge" or protrusion (Gps/Sensor housing) with even more height
+                val protrusionWidth = bodyWidth * 0.7f
+                val protrusionHeight = bodyHeight * 0.4f
+                // Protrusion Side/Shadow
+                drawRoundRect(
+                    color = Color.Black.copy(alpha = 0.5f),
+                    topLeft = Offset(center.x - protrusionWidth / 2, center.y - protrusionHeight / 2 + 2.dp.toPx()),
+                    size = Size(protrusionWidth, protrusionHeight),
+                    cornerRadius = CornerRadius(3.dp.toPx())
+                )
+                // Protrusion Top
+                drawRoundRect(
+                    color = Color(0xFF45494E),
+                    topLeft = Offset(center.x - protrusionWidth / 2, center.y - protrusionHeight / 2),
+                    size = Size(protrusionWidth, protrusionHeight),
+                    cornerRadius = CornerRadius(3.dp.toPx())
+                )
+                
+                // Highlight on the protrusion to show light hitting the "top"
+                drawRoundRect(
+                    color = highlightColor,
+                    topLeft = Offset(center.x - protrusionWidth / 2 + 1.dp.toPx(), center.y - protrusionHeight / 2 + 1.dp.toPx()),
+                    size = Size(protrusionWidth - 2.dp.toPx(), 2.dp.toPx()),
+                    cornerRadius = CornerRadius(1.dp.toPx())
+                )
+
+                // Body Outline
+                drawRoundRect(
+                    color = frameColor,
+                    topLeft = Offset(center.x - bodyWidth / 2, center.y - bodyHeight / 2),
+                    size = Size(bodyWidth, bodyHeight),
+                    cornerRadius = CornerRadius(4.dp.toPx()),
+                    style = Stroke(1.5.dp.toPx())
+                )
+
+                // 2. Draw 4 Arms (X-config)
+                val angles = listOf(45f, 135f, 225f, 315f)
+                angles.forEachIndexed { index, angleDeg ->
+                    val angleRad = Math.toRadians(angleDeg.toDouble()).toFloat()
+                    val endX = center.x + armLen * cos(angleRad)
+                    val endY = center.y + armLen * sin(angleRad)
+                    
+                    // Draw Arm
+                    drawLine(
+                        color = frameColor,
+                        start = center,
+                        end = Offset(endX, endY),
+                        strokeWidth = 2.dp.toPx()
+                    )
+                    
+                    // Draw Motor/Propeller circle at end
+                    // Front motors can be a different color to indicate heading
+                    val mColor = if (index < 2) accentColor else frameColor
+                    
+                    // Draw propeller "disc" to show top surface - Increase visibility
+                    drawCircle(
+                        color = mColor.copy(alpha = 0.2f),
+                        radius = motorRadius * 2f,
+                        center = Offset(endX, endY)
+                    )
+                    
+                    // Thick motor housing (3D look)
+                    drawCircle(
+                        color = Color.Black.copy(alpha = 0.4f),
+                        radius = motorRadius,
+                        center = Offset(endX, endY + 2.dp.toPx())
+                    )
+                    drawCircle(
+                        color = mColor,
+                        radius = motorRadius,
+                        center = Offset(endX, endY),
+                        style = Stroke(2.dp.toPx())
+                    )
+                    
+                    // Small dot for motor center
+                    drawCircle(
+                        color = mColor,
+                        radius = 1.dp.toPx(),
+                        center = Offset(endX, endY)
+                    )
+                }
+
+                // 3. Heading indicator (Forward Arrow on top of body)
+                // Make it look like it's sticking up
+                val headLen = 10.dp.toPx()
+                val path = androidx.compose.ui.graphics.Path().apply {
+                    moveTo(center.x, center.y - bodyHeight / 2 - 6.dp.toPx())
+                    lineTo(center.x - 6.dp.toPx(), center.y - bodyHeight / 2 + headLen)
+                    lineTo(center.x + 6.dp.toPx(), center.y - bodyHeight / 2 + headLen)
+                    close()
+                }
+                drawPath(path, color = accentColor)
+                
+                // 4. Add a VERY obvious "TOP" label or icon
+                drawCircle(
+                    color = accentColor,
+                    radius = 2.dp.toPx(),
+                    center = center
+                )
             }
         }
     }
