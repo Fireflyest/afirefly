@@ -1,26 +1,20 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
-
     <!-- Bluetooth and location permissions required for runtime scanning support -->
+    <uses-permission android:name="android.permission.BLUETOOTH" /> <!-- Bluetooth and location permissions required for runtime BLE scanning -->
     <uses-permission android:name="android.permission.BLUETOOTH" />
     <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" />
-    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
-    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
-    <!-- Android 12+ specific runtime permissions -->
-    <uses-permission android:name="android.permission.BLUETOOTH_SCAN" />
-    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
-
-
-    <!-- Bluetooth and location permissions required for runtime BLE scanning -->
-    <uses-permission android:name="android.permission.BLUETOOTH" />
     <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" />
-    <!-- Android 12+ runtime permissions -->
-    <uses-permission android:name="android.permission.BLUETOOTH_SCAN" />
-    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
-    <!-- Location permissions (required on older Android versions for BLE discovery) -->
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" /> <!-- Location permissions (required on older Android versions for BLE discovery) -->
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" /> <!-- Android 12+ specific runtime permissions -->
+    <uses-permission android:name="android.permission.BLUETOOTH_SCAN" /> <!-- Android 12+ runtime permissions -->
+    <uses-permission android:name="android.permission.BLUETOOTH_SCAN" />
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+
     <application
         android:allowBackup="true"
         android:dataExtractionRules="@xml/data_extraction_rules"
@@ -32,6 +26,11 @@
         android:theme="@style/Theme.Afirefly"
         tools:targetApi="31">
         <activity
+            android:name=".VehicleActivity"
+            android:exported="false"
+            android:label="@string/title_activity_vehicle"
+            android:theme="@style/Theme.Afirefly" />
+        <activity
             android:name=".MainActivity"
             android:configChanges="uiMode|orientation|screenSize"
             android:exported="true"
@@ -42,7 +41,8 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
-        <activity android:name=".ScanActivity"
+        <activity
+            android:name=".ScanActivity"
             android:configChanges="uiMode|orientation|screenSize"
             android:exported="false"
             android:theme="@style/Theme.Afirefly" />

@@ -1133,6 +1133,7 @@ fun DeviceCard(
     isLast: Boolean
 ) {
     val colors = androidx.compose.material3.MaterialTheme.colorScheme
+    val ctx = LocalContext.current
     val isOnline = device.status == "ONLINE"
     val isLinking = device.status == "LINKING"
 
@@ -1155,6 +1156,12 @@ fun DeviceCard(
             .width(192.dp)
             .combinedClickable(
                 onClick = onClick,
+                onDoubleClick = {
+                    val intent = Intent(ctx, VehicleActivity::class.java).apply {
+                        putExtra("device_name", device.name)
+                    }
+                    ctx.startActivity(intent)
+                },
                 onLongClick = { showMenu = true }
             ),
         shape = RoundedCornerShape(12.dp),
@@ -1572,8 +1579,6 @@ fun MainScreenPreview() {
         MainScreen()
     }
 }
-
-
 
 
 
