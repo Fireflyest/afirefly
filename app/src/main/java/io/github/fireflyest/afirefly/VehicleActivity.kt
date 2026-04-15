@@ -39,16 +39,26 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlin.math.roundToInt
 
 class VehicleActivity : ComponentActivity() {
-    private var bluetoothService: BluetoothLeService? = null
+    private val _bluetoothService = mutableStateOf<BluetoothLeService?>(null)
+    private var deviceAddress: String? = null
+
     private val connection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
             val binder = service as BluetoothLeService.LocalBinder
-            bluetoothService = binder.getService()
-            bluetoothService?.initialize()
+            val bService = binder.getService()
+            _bluetoothService.value = bService
+            
+            // Connect to device if address is available and not already connected
+            deviceAddress?.let { address ->
+                val currentState = bService.connectionState.value
+                if (currentState == BluetoothLeService.STATE_DISCONNECTED) {
+                    bService.connect(address)
+                }
+            }
         }
 
         override fun onServiceDisconnected(name: ComponentName?) {
-            bluetoothService = null
+            _bluetoothService.value = null
         }
     }
 
@@ -56,6 +66,7 @@ class VehicleActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
 
         val deviceName = intent.getStringExtra("device_name")
+        deviceAddress = intent.getStringExtra("device_address")
 
         // Force landscape and full screen
         requestedOrientation = android.content.pm.ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
@@ -65,14 +76,16 @@ class VehicleActivity : ComponentActivity() {
         controller.hide(androidx.core.view.WindowInsetsCompat.Type.systemBars())
         controller.systemBarsBehavior = androidx.core.view.WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
 
+        // Start bind immediately
+        val intentService = Intent(this, BluetoothLeService::class.java)
+        bindService(intentService, connection, BIND_AUTO_CREATE)
+
         setContent {
             AfireflyTheme {
-                VehicleScreen(bluetoothService, deviceName)
+                val service by _bluetoothService
+                VehicleScreen(service, deviceName, deviceAddress)
             }
         }
-
-        val intent = Intent(this, BluetoothLeService::class.java)
-        bindService(intent, connection, BIND_AUTO_CREATE)
     }
 
     override fun onDestroy() {
@@ -82,10 +95,12 @@ class VehicleActivity : ComponentActivity() {
 }
 
 @Composable
-fun VehicleScreen(service: BluetoothLeService?, deviceName: String?) {
+fun VehicleScreen(service: BluetoothLeService?, deviceName: String?, deviceAddress: String?) {
     // UI state for joysticks
     var leftOffset by remember { mutableStateOf(Offset.Zero) }
     var rightOffset by remember { mutableStateOf(Offset.Zero) }
+
+    val connectionState by (service?.connectionState ?: MutableStateFlow(BluetoothLeService.STATE_DISCONNECTED)).collectAsState()
 
     Box(
         modifier = Modifier
@@ -109,7 +124,7 @@ fun VehicleScreen(service: BluetoothLeService?, deviceName: String?) {
             }
     ) {
         // 1. Top Bar
-        VehicleTopBar(deviceName)
+        VehicleTopBar(service, deviceName, deviceAddress, connectionState)
 
         // 2. HUD Elements (Left & Right)
         VehicleHudOverlays()
@@ -119,14 +134,18 @@ fun VehicleScreen(service: BluetoothLeService?, deviceName: String?) {
 
         // 4. Main Controls (Joysticks)
         Box(modifier = Modifier.fillMaxSize().padding(horizontal = 48.dp, vertical = 32.dp)) {
-            // Left Stick
+            // Left Stick - Throttle (Y stays, X/Yaw springs back)
             Joystick(
                 modifier = Modifier.align(Alignment.BottomStart),
+                isSpringy = true,   // X axis (Yaw) -> Springs back
+                isSpringyY = false, // Y axis (Throttle) -> Stays put
                 onValueChange = { leftOffset = it }
             )
-            // Right Stick
+            // Right Stick - Direction (Spring back on both)
             Joystick(
                 modifier = Modifier.align(Alignment.BottomEnd),
+                isSpringy = true,
+                isSpringyY = true,
                 onValueChange = { rightOffset = it }
             )
         }
@@ -140,7 +159,13 @@ fun VehicleScreen(service: BluetoothLeService?, deviceName: String?) {
 }
 
 @Composable
-fun VehicleTopBar(deviceName: String?) {
+fun VehicleTopBar(service: BluetoothLeService?, deviceName: String?, deviceAddress: String?, connectionState: Int) {
+    var modeExpanded by remember { mutableStateOf(false) }
+    var currentMode by remember { mutableStateOf("STABILIZE") }
+    val modes = listOf("STABILIZE", "ALT HOLD", "LOITER", "AUTO", "RTL", "LAND")
+
+    val isConnected = connectionState == BluetoothLeService.STATE_CONNECTED
+
     Box(
         modifier = Modifier
             .fillMaxWidth()
@@ -151,23 +176,113 @@ fun VehicleTopBar(deviceName: String?) {
         Row(
             modifier = Modifier.align(Alignment.CenterStart),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            Icon(
-                imageVector = Icons.Default.FlightTakeoff,
-                contentDescription = null,
-                tint = Color(0xFF7BDB80),
-                modifier = Modifier.size(24.dp)
-            )
-            Text(
-                text = deviceName ?: "Unknown Device",
-                color = Color(0xFF7BDB80),
-                fontSize = 14.sp,
-                fontWeight = FontWeight.Bold,
-                fontFamily = FontFamily.Monospace,
-                maxLines = 1,
-                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
-            )
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Icon(
+                    imageVector = Icons.Default.FlightTakeoff,
+                    contentDescription = null,
+                    tint = if (isConnected) Color(0xFF7BDB80) else Color(0xFFFFB4AB),
+                    modifier = Modifier.size(24.dp)
+                )
+                Text(
+                    text = deviceName ?: "Unknown Device",
+                    color = if (isConnected) Color(0xFF7BDB80) else Color(0xFFFFB4AB),
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.Bold,
+                    fontFamily = FontFamily.Monospace,
+                    maxLines = 1,
+                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+                )
+            }
+
+            // Connection dependent UI
+            if (isConnected) {
+                // Mode Switcher
+                Box {
+                    Surface(
+                        onClick = { modeExpanded = true },
+                        color = Color(0xFF7BDB80).copy(alpha = 0.1f),
+                        shape = RoundedCornerShape(4.dp),
+                        border = BorderStroke(1.dp, Color(0xFF7BDB80).copy(alpha = 0.4f))
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            Text(
+                                text = currentMode,
+                                color = Color(0xFF7BDB80),
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Bold,
+                                fontFamily = FontFamily.Monospace
+                            )
+                            Icon(
+                                Icons.Default.ArrowDropDown,
+                                null,
+                                tint = Color(0xFF7BDB80),
+                                modifier = Modifier.size(16.dp)
+                            )
+                        }
+                    }
+                    DropdownMenu(
+                        expanded = modeExpanded,
+                        onDismissRequest = { modeExpanded = false },
+                        modifier = Modifier.background(Color(0xFF181C22))
+                    ) {
+                        modes.forEach { mode ->
+                            DropdownMenuItem(
+                                text = { 
+                                    Text(
+                                        mode, 
+                                        color = if (mode == currentMode) Color(0xFF7BDB80) else Color.White,
+                                        fontFamily = FontFamily.Monospace,
+                                        fontSize = 13.sp
+                                    ) 
+                                },
+                                onClick = {
+                                    currentMode = mode
+                                    modeExpanded = false
+                                }
+                            )
+                        }
+                    }
+                }
+            } else {
+                // Reconnect Button
+                val isConnecting = connectionState == BluetoothLeService.STATE_CONNECTING
+                Box(
+                    modifier = Modifier
+                        .size(32.dp) // Container size to ensure enough touch area
+                        .clickable(enabled = !isConnecting) {
+                            deviceAddress?.let { service?.connect(it) }
+                        },
+                    contentAlignment = Alignment.Center
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(24.dp) // Actual visible background circle
+                            .background(Color(0xFFFFB4AB).copy(alpha = 0.1f), CircleShape)
+                            .border(1.dp, Color(0xFFFFB4AB).copy(alpha = 0.4f), CircleShape),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.BluetoothConnected,
+                            contentDescription = "Reconnect",
+                            tint = Color(0xFFFFB4AB),
+                            modifier = Modifier.size(16.dp) // Even smaller icon
+                        )
+                    }
+                    if (isConnecting) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(28.dp), // Slightly larger than the circle
+                            color = Color(0xFFFFB4AB),
+                            strokeWidth = 1.dp
+                        )
+                    }
+                }
+            }
         }
 
         // Middle Telemetry - Absolute center
@@ -351,7 +466,12 @@ fun VehicleCentralHud() {
 }
 
 @Composable
-fun Joystick(modifier: Modifier = Modifier, onValueChange: (Offset) -> Unit) {
+fun Joystick(
+    modifier: Modifier = Modifier, 
+    isSpringy: Boolean = true,
+    isSpringyY: Boolean = true, // Added Y-axis spring control
+    onValueChange: (Offset) -> Unit
+) {
     var offset by remember { mutableStateOf(Offset.Zero) }
     val radius = 88.dp
     val knobRadius = 28.dp
@@ -363,9 +483,22 @@ fun Joystick(modifier: Modifier = Modifier, onValueChange: (Offset) -> Unit) {
             .border(1.dp, Color(0xFF7BDB80).copy(alpha = 0.1f), CircleShape)
             .pointerInput(Unit) {
                 detectDragGestures(
+                    onDragStart = { },
                     onDragEnd = {
-                        offset = Offset.Zero
-                        onValueChange(Offset.Zero)
+                        val newX = if (isSpringy) 0f else offset.x
+                        val newY = if (isSpringyY) 0f else offset.y
+                        offset = Offset(newX, newY)
+                        
+                        val maxDist = (radius - knobRadius).toPx()
+                        onValueChange(Offset(offset.x / maxDist, -offset.y / maxDist))
+                    },
+                    onDragCancel = {
+                        val newX = if (isSpringy) 0f else offset.x
+                        val newY = if (isSpringyY) 0f else offset.y
+                        offset = Offset(newX, newY)
+                        
+                        val maxDist = (radius - knobRadius).toPx()
+                        onValueChange(Offset(offset.x / maxDist, -offset.y / maxDist))
                     },
                     onDrag = { change, dragAmount ->
                         val newOffset = offset + dragAmount
@@ -398,24 +531,24 @@ fun Joystick(modifier: Modifier = Modifier, onValueChange: (Offset) -> Unit) {
 @Composable
 fun VehicleControlButtonGrid(modifier: Modifier = Modifier) {
     val buttons = listOf(
-        Pair("ARM", Color(0xFFFFB4AB)),
-        Pair("DISARM", Color(0xFFBECABA)),
-        Pair("TAKEOFF", Color(0xFF7BDB80)),
-        Pair("LAND", Color(0xFF7BDB80)),
-        Pair("RTL", Color(0xFFBECABA)),
-        Pair("HOLD", Color(0xFFD8B9FF))
+        Triple("ARM", Icons.Default.LockOpen, Color(0xFFFFB4AB)),
+        Triple("DISARM", Icons.Default.Lock, Color(0xFFBECABA)),
+        Triple("TAKEOFF", Icons.Default.FileUpload, Color(0xFF7BDB80)),
+        Triple("LAND", Icons.Default.FileDownload, Color(0xFF7BDB80)),
+        Triple("RTL", Icons.Default.Home, Color(0xFFBECABA)),
+        Triple("HOLD", Icons.Default.Pause, Color(0xFFD8B9FF))
     )
 
-    Column(modifier = modifier.width(320.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+    Column(modifier = modifier.width(280.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         val rows = buttons.chunked(3)
         rows.forEach { row ->
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                row.forEach { (label, color) ->
+                row.forEach { (label, icon, color) ->
                     val isTakeoff = label == "TAKEOFF"
                     Box(
                         modifier = Modifier
                             .weight(1f)
-                            .height(32.dp)
+                            .height(48.dp)
                             .then(
                                 if (isTakeoff) Modifier.background(androidx.compose.ui.graphics.Brush.linearGradient(listOf(Color(0xFF7BDB80), Color(0xFF238636))), RoundedCornerShape(8.dp))
                                 else Modifier.border(if (label == "ARM") 2.dp else 1.dp, color.copy(alpha = 0.4f), RoundedCornerShape(8.dp))
@@ -423,14 +556,25 @@ fun VehicleControlButtonGrid(modifier: Modifier = Modifier) {
                             .clickable { },
                         contentAlignment = Alignment.Center
                     ) {
-                        Text(
-                            text = label,
-                            color = if (isTakeoff) Color(0xFF00390E) else color,
-                            fontSize = 10.sp,
-                            fontWeight = FontWeight.Bold,
-                            fontFamily = FontFamily.Monospace,
-                            letterSpacing = 1.sp
-                        )
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(2.dp),
+                            modifier = Modifier.padding(top = 8.dp, bottom = 4.dp) // Added more top padding to push content down
+                        ) {
+                            Icon(
+                                icon, 
+                                null, 
+                                tint = if (isTakeoff) Color(0xFF00390E) else color,
+                                modifier = Modifier.size(20.dp)
+                            )
+                            Text(
+                                text = label,
+                                color = if (isTakeoff) Color(0xFF00390E) else color,
+                                fontSize = 6.sp,
+                                fontWeight = FontWeight.Bold,
+                                fontFamily = FontFamily.Monospace
+                            )
+                        }
                     }
                 }
             }
@@ -468,6 +612,6 @@ fun TelemetryItem(label: String, value: String) {
 @Composable
 fun GreetingPreview() {
     AfireflyTheme {
-        VehicleScreen(null, "Device Name")
+        VehicleScreen(null, "Device Name", "00:11:22:33:44:55")
     }
 }

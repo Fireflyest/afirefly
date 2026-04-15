@@ -1159,6 +1159,7 @@ fun DeviceCard(
                 onDoubleClick = {
                     val intent = Intent(ctx, VehicleActivity::class.java).apply {
                         putExtra("device_name", device.name)
+                        putExtra("device_address", device.uid)
                     }
                     ctx.startActivity(intent)
                 },
@@ -1579,9 +1580,5 @@ fun MainScreenPreview() {
         MainScreen()
     }
 }
-
-
-
-
 
 
