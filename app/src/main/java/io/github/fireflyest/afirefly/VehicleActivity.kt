@@ -196,6 +196,10 @@ fun VehicleScreen(service: BluetoothLeService?, deviceName: String?, deviceAddre
             sendCmd(FlightCommands.setThrottle(throttle))
 
             // Map right stick to Move (forward, right)
+            // rightOffset.y stays consistent with leftOffset.y: -1 (UP), 1 (DOWN)
+            // Most flight controllers expect Pitch: 1.0 = Forward, -1.0 = Backward.
+            // So if stick is UP (y = -1), we send 1.0. 
+            // We use -rightOffset.y to achieve this.
             kotlinx.coroutines.delay(50)
             sendCmd(FlightCommands.move((-rightOffset.y).coerceIn(-1f, 1f), (rightOffset.x).coerceIn(-1f, 1f)))
         }
@@ -816,7 +820,8 @@ fun Joystick(
     val density = androidx.compose.ui.platform.LocalDensity.current
     LaunchedEffect(initialOffset) {
         val maxDist = with(density) { (radius - knobRadius).toPx() }
-        offset = Offset(initialOffset.x * maxDist, -initialOffset.y * maxDist)
+        // Match the internal coordinate system: positive Y is down
+        offset = Offset(initialOffset.x * maxDist, initialOffset.y * maxDist)
     }
 
     Box(
