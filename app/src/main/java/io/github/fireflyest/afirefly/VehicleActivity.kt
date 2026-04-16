@@ -904,60 +904,69 @@ fun VehicleControlButtonGrid(
 
     val buttons = listOf(
         Triple("ARM", Icons.Default.LockOpen, Color(0xFFFFB4AB)),
-        Triple("DISARM", Icons.Default.Lock, Color(0xFFBECABA)),
+        Triple("DISARM", Icons.Default.Lock, Color(0xFF7BDB80)),
         Triple("TAKEOFF", Icons.Default.FileUpload, Color(0xFF7BDB80)),
         Triple("LAND", Icons.Default.FileDownload, Color(0xFF7BDB80)),
         Triple("RTL", Icons.Default.Home, Color(0xFFBECABA)),
         Triple("E-STOP", Icons.Default.Report, Color.Red)
     )
 
-    Column(modifier = modifier.width(280.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        val rows = buttons.chunked(3)
-        rows.forEach { row ->
-            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                row.forEach { (label, icon, color) ->
-                    val isTakeoff = label == "TAKEOFF"
-                    Box(
-                        modifier = Modifier
-                            .weight(1f)
-                            .height(48.dp)
-                            .then(
-                                if (isTakeoff) Modifier.background(androidx.compose.ui.graphics.Brush.linearGradient(listOf(Color(0xFF7BDB80), Color(0xFF238636))), RoundedCornerShape(8.dp))
-                                else Modifier.border(if (label == "ARM") 2.dp else 1.dp, color.copy(alpha = 0.4f), RoundedCornerShape(8.dp))
-                            )
-                            .clickable { 
-                                when(label) {
-                                    "ARM" -> sendCmd(FlightCommands.arm())
-                                    "DISARM" -> sendCmd(FlightCommands.disarm())
-                                    "TAKEOFF" -> sendCmd(FlightCommands.takeoff(1.0f)) 
-                                    "LAND" -> sendCmd(FlightCommands.land())
-                                    "E-STOP" -> sendCmd(FlightCommands.emergencyStop())
-                                    "RTL" -> sendCmd(FlightCommands.hover())
-                                }
-                            },
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Column(
-                            horizontalAlignment = Alignment.CenterHorizontally,
-                            verticalArrangement = Arrangement.spacedBy(2.dp),
-                            modifier = Modifier.padding(top = 8.dp, bottom = 4.dp) // Added more top padding to push content down
-                        ) {
-                            Icon(
-                                icon, 
-                                null, 
-                                tint = if (isTakeoff) Color(0xFF00390E) else color,
-                                modifier = Modifier.size(20.dp)
-                            )
-                            Text(
-                                text = label,
-                                color = if (isTakeoff) Color(0xFF00390E) else color,
-                                fontSize = 6.sp,
-                                fontWeight = FontWeight.Bold,
-                                fontFamily = FontFamily.Monospace
-                            )
+    Row(
+        modifier = modifier
+            .wrapContentWidth()
+            .height(56.dp)
+            .background(Color(0xFF1A1E24).copy(alpha = 0.8f), RoundedCornerShape(28.dp))
+            .border(1.dp, Color.White.copy(alpha = 0.1f), RoundedCornerShape(28.dp))
+            .padding(horizontal = 12.dp),
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        buttons.forEach { (label, icon, color) ->
+            val isEstop = label == "E-STOP"
+            
+            Box(
+                modifier = Modifier
+                    .size(width = 44.dp, height = 44.dp)
+                    .clip(CircleShape)
+                    .then(
+                        if (isEstop) Modifier.background(Color.Red.copy(alpha = 0.15f))
+                        else Modifier
+                    )
+                    .clickable { 
+                        when(label) {
+                            "ARM" -> sendCmd(FlightCommands.arm())
+                            "DISARM" -> sendCmd(FlightCommands.disarm())
+                            "TAKEOFF" -> sendCmd(FlightCommands.takeoff(1.0f)) 
+                            "LAND" -> sendCmd(FlightCommands.land())
+                            "E-STOP" -> sendCmd(FlightCommands.emergencyStop())
+                            "RTL" -> sendCmd(FlightCommands.hover())
                         }
-                    }
+                    },
+                contentAlignment = Alignment.Center
+            ) {
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Center
+                ) {
+                    Icon(
+                        icon, 
+                        null, 
+                        tint = if (isEstop) Color.Red else if (label == "TAKEOFF") Color(0xFF7BDB80) else color,
+                        modifier = Modifier.size(18.dp) // Smaller icons from 24dp
+                    )
+                    Text(
+                        text = label,
+                        color = (if (isEstop) Color.Red else if (label == "TAKEOFF") Color(0xFF7BDB80) else color).copy(alpha = 0.7f),
+                        fontSize = 6.sp, // Even smaller text
+                        fontWeight = FontWeight.Bold,
+                        fontFamily = FontFamily.Monospace
+                    )
                 }
+            }
+            
+            // Subtle dot divider instead of line to save space
+            if (buttons.indexOf(Triple(label, icon, color)) != buttons.size - 1) {
+                Box(modifier = Modifier.size(2.dp).background(Color.White.copy(alpha = 0.1f), CircleShape))
             }
         }
     }
