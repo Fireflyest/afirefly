@@ -99,13 +99,22 @@ class BluetoothLeService : Service() {
         // Do not clear _discoveredServices here to avoid transient UI clearing
     }
 
+    private var writeRetryCount = 0
+    private val MAX_WRITE_RETRIES = 3
+
     @SuppressLint("MissingPermission")
     fun writeCharacteristic(characteristic: BluetoothGattCharacteristic, data: ByteArray) {
-        if (bluetoothGatt == null) return
-        @Suppress("DEPRECATION")
-        characteristic.value = data
-        @Suppress("DEPRECATION")
-        bluetoothGatt?.writeCharacteristic(characteristic)
+        val gatt = bluetoothGatt ?: return
+        
+        // Use modern API if available (API 33+)
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+            gatt.writeCharacteristic(characteristic, data, BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT)
+        } else {
+            @Suppress("DEPRECATION")
+            characteristic.value = data
+            @Suppress("DEPRECATION")
+            gatt.writeCharacteristic(characteristic)
+        }
     }
 
     fun getSupportedGattServices(): List<BluetoothGattService>? {
@@ -158,10 +167,18 @@ class BluetoothLeService : Service() {
     }
 
     fun sendData(data: ByteArray) {
-        val service = bluetoothGatt?.getService(BluetoothConstants.SERVICE_UUID) ?: return
+        val gatt = bluetoothGatt ?: return
+        val service = gatt.getService(BluetoothConstants.SERVICE_UUID) 
+        if (service == null) {
+            Log.e(TAG, "Service not found: ${BluetoothConstants.SERVICE_UUID}")
+            // Trigger service discovery if not already done?
+            return
+        }
         val characteristic = service.getCharacteristic(BluetoothConstants.TX_CHARACTERISTIC_UUID)
         if (characteristic != null) {
             writeCharacteristic(characteristic, data)
+        } else {
+            Log.e(TAG, "Characteristic not found: ${BluetoothConstants.TX_CHARACTERISTIC_UUID}")
         }
     }
 
@@ -202,6 +219,14 @@ class BluetoothLeService : Service() {
         @Suppress("DEPRECATION")
         override fun onCharacteristicChanged(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic) {
             broadcastUpdate(characteristic)
+        }
+
+        override fun onCharacteristicChanged(
+            gatt: BluetoothGatt,
+            characteristic: BluetoothGattCharacteristic,
+            value: ByteArray
+        ) {
+            _receivedData.tryEmit(value)
         }
 
         @Deprecated("Deprecated in Java")

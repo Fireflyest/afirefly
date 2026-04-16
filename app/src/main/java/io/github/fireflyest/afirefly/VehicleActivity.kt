@@ -1,6 +1,7 @@
 package io.github.fireflyest.afirefly
 
 import android.content.ComponentName
+import android.content.Context
 import android.content.Intent
 import android.content.ServiceConnection
 import android.os.Bundle
@@ -15,6 +16,8 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -38,6 +41,8 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.*
 import io.github.fireflyest.afirefly.ui.theme.AfireflyTheme
 import kotlinx.coroutines.flow.MutableStateFlow
+import org.json.JSONArray
+import java.util.*
 import kotlin.math.*
 
 class VehicleActivity : ComponentActivity() {
@@ -73,7 +78,9 @@ class VehicleActivity : ComponentActivity() {
 
         // Force landscape and full screen
         requestedOrientation = android.content.pm.ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
-        window.attributes.layoutInDisplayCutoutMode = android.view.WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P) {
+            window.attributes.layoutInDisplayCutoutMode = android.view.WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+        }
         androidx.core.view.WindowCompat.setDecorFitsSystemWindows(window, false)
         val controller = androidx.core.view.WindowInsetsControllerCompat(window, window.decorView)
         controller.hide(androidx.core.view.WindowInsetsCompat.Type.systemBars())
@@ -121,6 +128,9 @@ fun VehicleScreen(service: BluetoothLeService?, deviceName: String?, deviceAddre
 
     val connectionState by (service?.connectionState ?: MutableStateFlow(BluetoothLeService.STATE_DISCONNECTED)).collectAsState()
     
+    // Command history state moved up to share with sending logic
+    val cmdHistory = remember { mutableStateListOf<String>() }
+    
     // Remote states from drone
     var remoteTelemetry by remember { mutableStateOf(FlightCommands.Telemetry()) }
 
@@ -137,21 +147,51 @@ fun VehicleScreen(service: BluetoothLeService?, deviceName: String?, deviceAddre
     LaunchedEffect(leftOffset, rightOffset, connectionState) {
         if (connectionState == BluetoothLeService.STATE_CONNECTED && service != null) {
             // throttle (forward/backward on left stick Y)
-            // leftOffset.y ranges from -1 to 1 (0 at center in the Joystick component)
-            // Typically: -1 is full up (forward push), 1 is full down (backward pull).
             // Map leftOffset.y: -1 (UP) -> 100.0 (FULL), 1 (DOWN) -> 0.0 (OFF)
+            // User indicated 30% should be sent properly. 
+            // Most firmware expects a float in some range. Let's stick with 0..100 for now 
+            // as it was already there, but ensure it's calculated exactly as needed.
             val throttle = ((-leftOffset.y + 1f) / 2f * 100f).coerceIn(0f, 100f)
-            service.sendData(FlightCommands.setThrottle(throttle))
-
-            // Yaw (Rotation) is often on left stick X
-            // Map leftOffset.x (-1..1) to attitude yaw rate or direct attitude target
-            // Let's send it via attitude command or move depending on how your firmware handles it.
-            // For now, let's keep it simple: Left stick Y = Throttle, Right stick = Pitch/Roll.
             
+            // Get saved UUIDs if available to ensure correct characteristic is used
+            val prefs = service.getSharedPreferences("afirefly_prefs", Context.MODE_PRIVATE)
+            val savedJson = prefs.getString("saved_devices", "[]")
+            val devicesArr = try { JSONArray(savedJson) } catch (e: Exception) { JSONArray() }
+            var sUuid: UUID? = null
+            var cUuid: UUID? = null
+            
+            for (i in 0 until devicesArr.length()) {
+                val obj = devicesArr.getJSONObject(i)
+                if (obj.getString("uid") == deviceAddress) {
+                    val sStr = obj.optString("serviceUuid", "")
+                    val cStr = obj.optString("charUuid", "")
+                    if (sStr.isNotEmpty() && cStr.isNotEmpty()) {
+                        sUuid = UUID.fromString(sStr)
+                        cUuid = UUID.fromString(cStr)
+                    }
+                    break
+                }
+            }
+
+            fun sendCmd(data: ByteArray) {
+                val hex = data.joinToString("") { "%02X".format(it) }
+                if (sUuid != null && cUuid != null) {
+                    service.sendData(sUuid, cUuid, data)
+                } else {
+                    service.sendData(data)
+                }
+                // Add to history immediately for UI feedback
+                if (cmdHistory.firstOrNull() != hex) {
+                    cmdHistory.add(0, hex)
+                    if (cmdHistory.size > 20) cmdHistory.removeAt(cmdHistory.size - 1)
+                }
+            }
+
+            // Only send throttle if changed significantly or periodically
+            sendCmd(FlightCommands.setThrottle(throttle))
+
             // Map right stick to Move (forward, right)
-            // forward = -offset.y, right = offset.x
-            // coercion to ensure within range -1..1
-            service.sendData(FlightCommands.move((-rightOffset.y).coerceIn(-1f, 1f), (rightOffset.x).coerceIn(-1f, 1f)))
+            sendCmd(FlightCommands.move((-rightOffset.y).coerceIn(-1f, 1f), (rightOffset.x).coerceIn(-1f, 1f)))
         }
     }
 
@@ -177,7 +217,17 @@ fun VehicleScreen(service: BluetoothLeService?, deviceName: String?, deviceAddre
             }
     ) {
         // 1. Top Bar
-        VehicleTopBar(service, deviceName, deviceAddress, connectionState, remoteTelemetry)
+        VehicleTopBar(
+            service, 
+            deviceName, 
+            deviceAddress, 
+            connectionState, 
+            remoteTelemetry,
+            onCommandSent = { hex ->
+                cmdHistory.add(0, hex)
+                if (cmdHistory.size > 20) cmdHistory.removeAt(cmdHistory.size - 1)
+            }
+        )
 
         // 2. HUD Elements (Left & Right)
         VehicleHudOverlays(remoteTelemetry)
@@ -205,10 +255,23 @@ fun VehicleScreen(service: BluetoothLeService?, deviceName: String?, deviceAddre
         }
 
         // 5. Center Button Grid
-        VehicleControlButtonGrid(modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 40.dp), service = service)
+        VehicleControlButtonGrid(
+            modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 40.dp), 
+            service = service,
+            deviceAddress = deviceAddress,
+            onCommandSent = { hex -> 
+                cmdHistory.add(0, hex)
+                if (cmdHistory.size > 20) cmdHistory.removeAt(cmdHistory.size - 1)
+            }
+        )
 
         // 6. Bottom Telemetry Bar
-        VehicleBottomBar(modifier = Modifier.align(Alignment.BottomCenter), telemetry = remoteTelemetry)
+        VehicleBottomBar(
+            modifier = Modifier.align(Alignment.BottomCenter), 
+            telemetry = remoteTelemetry, 
+            service = service,
+            history = cmdHistory
+        )
     }
 }
 
@@ -218,7 +281,8 @@ fun VehicleTopBar(
     deviceName: String?, 
     deviceAddress: String?, 
     connectionState: Int,
-    telemetry: FlightCommands.Telemetry
+    telemetry: FlightCommands.Telemetry,
+    onCommandSent: (String) -> Unit = {} // Added callback
 ) {
     var modeExpanded by remember { mutableStateOf(false) }
     var currentMode by remember { mutableStateOf("DIRECT") } // Set default to DIRECT as requested
@@ -310,8 +374,32 @@ fun VehicleTopBar(
                                 onClick = {
                                     currentMode = modeLabel
                                     modeExpanded = false
-                                    // Send mode change command
-                                    service?.sendData(FlightCommands.setMode(modeValue))
+                                    
+                                    val prefs = service?.getSharedPreferences("afirefly_prefs", Context.MODE_PRIVATE)
+                                    val savedJson = prefs?.getString("saved_devices", "[]") ?: "[]"
+                                    val devicesArr = try { JSONArray(savedJson) } catch (e: Exception) { JSONArray() }
+                                    var sUuid: UUID? = null
+                                    var cUuid: UUID? = null
+                                    for (i in 0 until devicesArr.length()) {
+                                        val obj = devicesArr.getJSONObject(i)
+                                        if (obj.getString("uid") == deviceAddress) {
+                                            val sStr = obj.optString("serviceUuid", "")
+                                            val cStr = obj.optString("charUuid", "")
+                                            if (sStr.isNotEmpty() && cStr.isNotEmpty()) {
+                                                sUuid = UUID.fromString(sStr)
+                                                cUuid = UUID.fromString(cStr)
+                                            }
+                                            break
+                                        }
+                                    }
+                                    val data = FlightCommands.setMode(modeValue)
+                                    if (sUuid != null && cUuid != null) {
+                                        service?.sendData(sUuid, cUuid, data)
+                                    } else {
+                                        service?.sendData(data)
+                                    }
+                                    // ADDED: Force update history
+                                    onCommandSent(data.joinToString("") { "%02X".format(it) })
                                 }
                             )
                         }
@@ -778,7 +866,42 @@ fun Joystick(
 }
 
 @Composable
-fun VehicleControlButtonGrid(service: BluetoothLeService?, modifier: Modifier = Modifier) {
+fun VehicleControlButtonGrid(
+    service: BluetoothLeService?, 
+    modifier: Modifier = Modifier, 
+    deviceAddress: String? = null,
+    onCommandSent: (String) -> Unit = {}
+) {
+    // Helper to send command with potential UUIDs
+    fun sendCmd(data: ByteArray) {
+        if (service == null) return
+        val prefs = service.getSharedPreferences("afirefly_prefs", Context.MODE_PRIVATE)
+        val savedJson = prefs.getString("saved_devices", "[]")
+        val devicesArr = try { JSONArray(savedJson) } catch (e: Exception) { JSONArray() }
+        var sUuid: UUID? = null
+        var cUuid: UUID? = null
+        
+        for (i in 0 until devicesArr.length()) {
+            val obj = devicesArr.getJSONObject(i)
+            if (obj.getString("uid") == deviceAddress) {
+                val sStr = obj.optString("serviceUuid", "")
+                val cStr = obj.optString("charUuid", "")
+                if (sStr.isNotEmpty() && cStr.isNotEmpty()) {
+                    sUuid = UUID.fromString(sStr)
+                    cUuid = UUID.fromString(cStr)
+                }
+                break
+            }
+        }
+
+        if (sUuid != null && cUuid != null) {
+            service.sendData(sUuid, cUuid, data)
+        } else {
+            service.sendData(data)
+        }
+        onCommandSent(data.joinToString("") { "%02X".format(it) })
+    }
+
     val buttons = listOf(
         Triple("ARM", Icons.Default.LockOpen, Color(0xFFFFB4AB)),
         Triple("DISARM", Icons.Default.Lock, Color(0xFFBECABA)),
@@ -804,12 +927,12 @@ fun VehicleControlButtonGrid(service: BluetoothLeService?, modifier: Modifier = 
                             )
                             .clickable { 
                                 when(label) {
-                                    "ARM" -> service?.sendData(FlightCommands.arm())
-                                    "DISARM" -> service?.sendData(FlightCommands.disarm())
-                                    "TAKEOFF" -> service?.sendData(FlightCommands.takeoff(1.0f)) // Default 1m takeoff
-                                    "LAND" -> service?.sendData(FlightCommands.land())
-                                    "E-STOP" -> service?.sendData(FlightCommands.emergencyStop())
-                                    "RTL" -> service?.sendData(FlightCommands.hover()) // RTL maps to hover for now
+                                    "ARM" -> sendCmd(FlightCommands.arm())
+                                    "DISARM" -> sendCmd(FlightCommands.disarm())
+                                    "TAKEOFF" -> sendCmd(FlightCommands.takeoff(1.0f)) 
+                                    "LAND" -> sendCmd(FlightCommands.land())
+                                    "E-STOP" -> sendCmd(FlightCommands.emergencyStop())
+                                    "RTL" -> sendCmd(FlightCommands.hover())
                                 }
                             },
                         contentAlignment = Alignment.Center
@@ -841,20 +964,82 @@ fun VehicleControlButtonGrid(service: BluetoothLeService?, modifier: Modifier = 
 }
 
 @Composable
-fun VehicleBottomBar(modifier: Modifier = Modifier, telemetry: FlightCommands.Telemetry) {
+fun VehicleBottomBar(
+    modifier: Modifier = Modifier, 
+    telemetry: FlightCommands.Telemetry,
+    service: BluetoothLeService?,
+    history: List<String>
+) {
+    var showHistory by remember { mutableStateOf(false) }
+
+
     Box(
         modifier = modifier
             .fillMaxWidth()
             .height(32.dp)
             .background(Color(0xFF0A0E14).copy(alpha = 0.8f))
-            .padding(horizontal = 24.dp),
-        contentAlignment = Alignment.Center
+            .padding(horizontal = 16.dp),
+        contentAlignment = Alignment.CenterStart // Change to start-aligned
     ) {
-        Row(horizontalArrangement = Arrangement.spacedBy(32.dp)) {
-            val q = telemetry.quaternion
-            TelemetryItem("QUAT", String.format("W:%.2f X:%.2f Y:%.2f Z:%.2f", q[0], q[1], q[2], q[3]))
-            TelemetryItem("ALT", String.format("%.2fm", telemetry.altitude))
-            TelemetryItem("SPD", String.format("%.2fm/s", telemetry.velocity))
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            // Left-aligned telemetry items
+            Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                val q = telemetry.quaternion
+                TelemetryItem("QUAT", String.format(Locale.US, "W:%.2f X:%.2f Y:%.2f Z:%.2f", q[0], q[1], q[2], q[3]))
+                TelemetryItem("ALT", String.format(Locale.US, "%.2fm", telemetry.altitude))
+                TelemetryItem("SPD", String.format(Locale.US, "%.2fm/s", telemetry.velocity))
+            }
+
+            // Right-aligned history preview
+            Box(modifier = Modifier.clickable { if (history.isNotEmpty()) showHistory = true }) {
+                Text(
+                    text = history.firstOrNull() ?: "NO CMD",
+                    color = Color(0xFF7BDB80).copy(alpha = 0.6f),
+                    fontSize = 10.sp,
+                    fontFamily = FontFamily.Monospace,
+                    maxLines = 1
+                )
+            }
+        }
+    }
+
+    if (showHistory) {
+        @OptIn(ExperimentalMaterial3Api::class)
+        ModalBottomSheet(
+            onDismissRequest = { showHistory = false },
+            containerColor = Color(0xFF10141A),
+            contentColor = Color.White
+        ) {
+            LazyColumn(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(16.dp)
+            ) {
+                item {
+                    Text(
+                        "Command History", 
+                        fontWeight = FontWeight.Bold, 
+                        fontSize = 16.sp, 
+                        color = Color(0xFF7BDB80),
+                        modifier = Modifier.padding(bottom = 16.dp)
+                    )
+                }
+                items(history) { cmd ->
+                    Text(
+                        cmd, 
+                        fontFamily = FontFamily.Monospace, 
+                        fontSize = 14.sp,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 8.dp)
+                    )
+                    HorizontalDivider(color = Color.White.copy(alpha = 0.1f))
+                }
+            }
         }
     }
 }

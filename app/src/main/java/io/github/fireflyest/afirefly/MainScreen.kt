@@ -104,8 +104,16 @@ fun MainScreen() {
         object : ServiceConnection {
             override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
                 val binder = service as BluetoothLeService.LocalBinder
-                bluetoothService = binder.getService()
-                bluetoothService?.initialize()
+                val bService = binder.getService()
+                bluetoothService = bService
+                bService.initialize()
+                
+                // If there's a selected device, try to connect if disconnected
+                selectedDeviceUid?.let { uid ->
+                    if (bService.connectionState.value == BluetoothLeService.STATE_DISCONNECTED) {
+                        bService.connect(uid)
+                    }
+                }
             }
 
             override fun onServiceDisconnected(name: ComponentName?) {
@@ -241,15 +249,30 @@ fun MainScreen() {
     // Global Hex toggle state - can be lifted or kept here if it affects both display and sending
     var isHexGlobal by remember { mutableStateOf(false) }
 
-    LaunchedEffect(bluetoothService, isHexGlobal) {
-        bluetoothService?.receivedData?.collect { data ->
-            val timestamp = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date())
-            val displayData = if (isHexGlobal) {
-                data.joinToString("") { "%02X ".format(it) }
-            } else {
-                String(data, Charsets.UTF_8)
+    val currentDevice = devices.find { it.uid == selectedDeviceUid }
+    val sUuidStr = currentDevice?.serviceUuid
+    val cUuidStr = currentDevice?.charUuid
+
+    LaunchedEffect(bluetoothService, isHexGlobal, selectedDeviceUid, sUuidStr, cUuidStr) {
+        bluetoothService?.let { service ->
+            // Try enabling notifications if we have UUIDs
+            if (sUuidStr != null && cUuidStr != null) {
+                try {
+                    service.enableNotifications(UUID.fromString(sUuidStr), UUID.fromString(cUuidStr))
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                }
             }
-            logs.add("$timestamp RX: $displayData")
+
+            service.receivedData.collect { data ->
+                val timestamp = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date())
+                val displayData = if (isHexGlobal) {
+                    data.joinToString("") { "%02X ".format(it) }
+                } else {
+                    String(data, Charsets.UTF_8)
+                }
+                logs.add("$timestamp RX: $displayData")
+            }
         }
     }
 
@@ -1580,5 +1603,7 @@ fun MainScreenPreview() {
         MainScreen()
     }
 }
+
+
 
 
