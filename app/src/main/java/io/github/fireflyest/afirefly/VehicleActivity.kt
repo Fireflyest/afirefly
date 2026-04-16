@@ -151,9 +151,7 @@ fun VehicleScreen(service: BluetoothLeService?, deviceName: String?, deviceAddre
         if (connectionState == BluetoothLeService.STATE_CONNECTED && service != null) {
             // throttle (forward/backward on left stick Y)
             // Map leftOffset.y: -1 (UP) -> 100.0 (FULL), 1 (DOWN) -> 0.0 (OFF)
-            // The hardware expected range might be 0.0 to 1.0 or 0 to 100. 
-            // Looking at FlightCommands.setThrottle(throttle: Float), it puts a float.
-            // If the user's hex 11E3339340 corresponds to 4.6%, then 0..100 is likely correct for the input.
+            // The hardware expected range is 0 to 100 according to user feedback
             val throttle = ((-leftOffset.y + 1f) / 2f * 100f).coerceIn(0f, 100f)
             
             // Get saved UUIDs if available to ensure correct characteristic is used
@@ -820,7 +818,9 @@ fun Joystick(
     val density = androidx.compose.ui.platform.LocalDensity.current
     LaunchedEffect(initialOffset) {
         val maxDist = with(density) { (radius - knobRadius).toPx() }
-        // Match the internal coordinate system: positive Y is down
+        // The internal state 'offset' uses top-left as (0,0), but the knob is centered.
+        // In the 'onDrag' logic, 'offset' is relative to the center.
+        // positive Y is DOWN in the UI.
         offset = Offset(initialOffset.x * maxDist, initialOffset.y * maxDist)
     }
 
@@ -833,27 +833,30 @@ fun Joystick(
                 detectDragGestures(
                     onDragStart = { },
                     onDragEnd = {
+                        val maxDist = (radius - knobRadius).toPx()
                         val newX = if (isSpringy) 0f else offset.x
                         val newY = if (isSpringyY) 0f else offset.y
                         offset = Offset(newX, newY)
                         
-                        val maxDist = (radius - knobRadius).toPx()
-                        onValueChange(Offset(offset.x / maxDist, -offset.y / maxDist))
+                        // Emit normalized value: Y up is negative, so we negate it for 'onValueChange'
+                        onValueChange(Offset(offset.x / maxDist, offset.y / maxDist))
                     },
                     onDragCancel = {
+                        val maxDist = (radius - knobRadius).toPx()
                         val newX = if (isSpringy) 0f else offset.x
                         val newY = if (isSpringyY) 0f else offset.y
                         offset = Offset(newX, newY)
                         
-                        val maxDist = (radius - knobRadius).toPx()
-                        onValueChange(Offset(offset.x / maxDist, -offset.y / maxDist))
+                        onValueChange(Offset(offset.x / maxDist, offset.y / maxDist))
                     },
                     onDrag = { change, dragAmount ->
+                        change.consume()
                         val newOffset = offset + dragAmount
                         val dist = newOffset.getDistance()
                         val maxDist = (radius - knobRadius).toPx()
                         offset = if (dist <= maxDist) newOffset else newOffset * (maxDist / dist)
-                        onValueChange(Offset(offset.x / maxDist, -offset.y / maxDist))
+                        // Emit normalized value: X right is positive, Y down is positive
+                        onValueChange(Offset(offset.x / maxDist, offset.y / maxDist))
                     }
                 )
             },
