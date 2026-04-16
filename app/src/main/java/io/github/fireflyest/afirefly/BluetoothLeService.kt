@@ -26,8 +26,9 @@ class BluetoothLeService : Service() {
     private var bluetoothAdapter: BluetoothAdapter? = null
     private var bluetoothGatt: BluetoothGatt? = null
 
-    private val _connectionState = MutableStateFlow(STATE_DISCONNECTED)
-    val connectionState: StateFlow<Int> = _connectionState
+    // Pair of (DeviceAddress, State)
+    private val _connectionState = MutableStateFlow<Pair<String?, Int>>(null to STATE_DISCONNECTED)
+    val connectionState: StateFlow<Pair<String?, Int>> = _connectionState
 
     private val _discoveredServices = MutableStateFlow<List<BluetoothGattService>>(emptyList())
     val discoveredServices: StateFlow<List<BluetoothGattService>> = _discoveredServices
@@ -73,7 +74,7 @@ class BluetoothLeService : Service() {
 
         try {
             val device = bluetoothAdapter!!.getRemoteDevice(address)
-            _connectionState.value = STATE_CONNECTING
+            _connectionState.value = address to STATE_CONNECTING
             @SuppressLint("MissingPermission")
             bluetoothGatt = device.connectGatt(this, false, gattCallback)
         } catch (exception: IllegalArgumentException) {
@@ -106,9 +107,16 @@ class BluetoothLeService : Service() {
     fun writeCharacteristic(characteristic: BluetoothGattCharacteristic, data: ByteArray) {
         val gatt = bluetoothGatt ?: return
         
+        // Log the attempt
+        Log.d(TAG, "Writing characteristic ${characteristic.uuid}: ${data.joinToString("") { "%02X".format(it) }}")
+
+        // Set write type to NO_RESPONSE for better reliability/performance with NUS-like services
+        // since we are flooding it with joystick updates
+        characteristic.writeType = BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
+
         // Use modern API if available (API 33+)
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
-            gatt.writeCharacteristic(characteristic, data, BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT)
+            gatt.writeCharacteristic(characteristic, data, BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE)
         } else {
             @Suppress("DEPRECATION")
             characteristic.value = data
@@ -160,58 +168,117 @@ class BluetoothLeService : Service() {
     }
 
     fun sendData(serviceUuid: UUID, charUuid: UUID, data: ByteArray) {
-        val gatt = bluetoothGatt ?: return
-        val service = gatt.getService(serviceUuid) ?: return
-        val characteristic = service.getCharacteristic(charUuid) ?: return
+        val gatt = bluetoothGatt ?: run {
+            Log.e(TAG, "sendData: bluetoothGatt is null")
+            return
+        }
+        val service = gatt.getService(serviceUuid) ?: run {
+            Log.e(TAG, "sendData: service not found $serviceUuid")
+            return
+        }
+        val characteristic = service.getCharacteristic(charUuid) ?: run {
+            Log.e(TAG, "sendData: characteristic not found $charUuid")
+            return
+        }
         writeCharacteristic(characteristic, data)
     }
 
     fun sendData(data: ByteArray) {
-        val gatt = bluetoothGatt ?: return
-        val service = gatt.getService(BluetoothConstants.SERVICE_UUID) 
-        if (service == null) {
-            Log.e(TAG, "Service not found: ${BluetoothConstants.SERVICE_UUID}")
-            // Trigger service discovery if not already done?
+        val gatt = bluetoothGatt ?: run {
+            Log.e(TAG, "sendData (default): bluetoothGatt is null")
             return
         }
-        val characteristic = service.getCharacteristic(BluetoothConstants.TX_CHARACTERISTIC_UUID)
+        
+        // 1. Try saved UUIDs from preferences first to ensure stability across activity changes
+        val prefs = getSharedPreferences("afirefly_prefs", Context.MODE_PRIVATE)
+        val deviceAddress = gatt.device.address
+        val savedJson = prefs.getString("saved_devices", "[]")
+        val devicesArr = try { org.json.JSONArray(savedJson) } catch (e: Exception) { org.json.JSONArray() }
+        
+        for (i in 0 until devicesArr.length()) {
+            val obj = devicesArr.getJSONObject(i)
+            if (obj.getString("uid") == deviceAddress) {
+                val sStr = obj.optString("serviceUuid", "")
+                val cStr = obj.optString("charUuid", "")
+                if (sStr.isNotEmpty() && cStr.isNotEmpty()) {
+                    val sUuid = UUID.fromString(sStr)
+                    val cUuid = UUID.fromString(cStr)
+                    val service = gatt.getService(sUuid)
+                    val characteristic = service?.getCharacteristic(cUuid)
+                    if (characteristic != null) {
+                        writeCharacteristic(characteristic, data)
+                        return
+                    }
+                }
+                break
+            }
+        }
+
+        // 2. Fallback to standard Nordic UART Service if no specific config found
+        val service = gatt.getService(BluetoothConstants.SERVICE_UUID) 
+        val characteristic = service?.getCharacteristic(BluetoothConstants.TX_CHARACTERISTIC_UUID)
         if (characteristic != null) {
             writeCharacteristic(characteristic, data)
         } else {
-            Log.e(TAG, "Characteristic not found: ${BluetoothConstants.TX_CHARACTERISTIC_UUID}")
+            Log.e(TAG, "sendData: No characteristic matched for sending data")
         }
     }
 
     private val gattCallback = object : BluetoothGattCallback() {
         @SuppressLint("MissingPermission")
         override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
+            val deviceAddress = gatt.device.address
             if (newState == BluetoothProfile.STATE_CONNECTED) {
-                _connectionState.value = STATE_CONNECTED
-                Log.i(TAG, "Connected to GATT server.")
-                Log.i(TAG, "Attempting to start service discovery: ${bluetoothGatt?.discoverServices()}")
+                _connectionState.value = deviceAddress to STATE_CONNECTED
+                Log.i(TAG, "Connected to GATT server: $deviceAddress")
+                Log.i(TAG, "Attempting to start service discovery: ${gatt.discoverServices()}")
             } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
-                _connectionState.value = STATE_DISCONNECTED
+                _connectionState.value = deviceAddress to STATE_DISCONNECTED
                 // Do not clear _discoveredServices here to avoid transient UI clearing
-                Log.i(TAG, "Disconnected from GATT server.")
+                Log.i(TAG, "Disconnected from GATT server: $deviceAddress")
             }
         }
 
         override fun onServicesDiscovered(gatt: BluetoothGatt, status: Int) {
             if (status == BluetoothGatt.GATT_SUCCESS) {
-                Log.w(TAG, "onServicesDiscovered received: $status")
+                val deviceAddress = gatt.device.address
+                Log.w(TAG, "onServicesDiscovered success for: $deviceAddress")
                 val services = gatt.services ?: emptyList()
                 if (services.isNotEmpty()) {
                     _discoveredServices.value = services
 
-                    // Automatically enable notifications for the default RX characteristic if available
-                    val service = gatt.getService(BluetoothConstants.SERVICE_UUID)
-                    val rxChar = service?.getCharacteristic(BluetoothConstants.RX_CHARACTERISTIC_UUID)
-                    if (rxChar != null) {
-                        enableNotifications(BluetoothConstants.SERVICE_UUID, BluetoothConstants.RX_CHARACTERISTIC_UUID)
+                    // 1. Try to enable custom UUID notifications from saved preferences first
+                    val prefs = getSharedPreferences("afirefly_prefs", Context.MODE_PRIVATE)
+                    val savedJson = prefs.getString("saved_devices", "[]")
+                    val devicesArr = try { org.json.JSONArray(savedJson) } catch (e: Exception) { org.json.JSONArray() }
+                    var enabledCustom = false
+                    
+                    for (i in 0 until devicesArr.length()) {
+                        val obj = devicesArr.getJSONObject(i)
+                        if (obj.getString("uid") == deviceAddress) {
+                            val sStr = obj.optString("serviceUuid", "")
+                            val cStr = obj.optString("charUuid", "")
+                            if (sStr.isNotEmpty() && cStr.isNotEmpty()) {
+                                Log.i(TAG, "Auto-enabling custom notifications: $sStr / $cStr")
+                                enableNotifications(UUID.fromString(sStr), UUID.fromString(cStr))
+                                enabledCustom = true
+                            }
+                            break
+                        }
+                    }
+
+                    // 2. Fallback to standard Nordic UART Service if no custom config was found/applied
+                    if (!enabledCustom) {
+                        val service = gatt.getService(BluetoothConstants.SERVICE_UUID)
+                        val rxChar = service?.getCharacteristic(BluetoothConstants.RX_CHARACTERISTIC_UUID)
+                        if (rxChar != null) {
+                            Log.i(TAG, "Auto-enabling default Nordic notifications")
+                            enableNotifications(BluetoothConstants.SERVICE_UUID, BluetoothConstants.RX_CHARACTERISTIC_UUID)
+                        }
                     }
                 }
             } else {
-                Log.w(TAG, "onServicesDiscovered received: $status")
+                Log.w(TAG, "onServicesDiscovered failed with status: $status")
             }
         }
 
@@ -244,6 +311,8 @@ class BluetoothLeService : Service() {
             characteristic: BluetoothGattCharacteristic?,
             status: Int
         ) {
+            val hex = characteristic?.value?.joinToString("") { "%02X".format(it) } ?: "null"
+            Log.d(TAG, "onCharacteristicWrite: status=$status, data=$hex")
             characteristic?.value?.let { 
                 _writeResult.tryEmit(it to status)
             }

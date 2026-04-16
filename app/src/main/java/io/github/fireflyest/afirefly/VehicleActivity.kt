@@ -58,7 +58,7 @@ class VehicleActivity : ComponentActivity() {
             
             // Connect to device if address is available and not already connected
             deviceAddress?.let { address ->
-                val currentState = bService.connectionState.value
+                val currentState = bService.connectionState.value.second
                 if (currentState == BluetoothLeService.STATE_DISCONNECTED) {
                     bService.connect(address)
                 }
@@ -126,7 +126,10 @@ fun VehicleScreen(service: BluetoothLeService?, deviceName: String?, deviceAddre
     var leftOffset by remember { mutableStateOf(Offset(0f, 1f)) }
     var rightOffset by remember { mutableStateOf(Offset.Zero) }
 
-    val connectionState by (service?.connectionState ?: MutableStateFlow(BluetoothLeService.STATE_DISCONNECTED)).collectAsState()
+    val connectionStatePair by (service?.connectionState ?: MutableStateFlow(null to BluetoothLeService.STATE_DISCONNECTED)).collectAsState()
+    // Validate that the state update belongs to the device this Activity is interested in
+    val isCorrectDevice = connectionStatePair.first == deviceAddress
+    val connectionState = if (isCorrectDevice) connectionStatePair.second else BluetoothLeService.STATE_DISCONNECTED
     
     // Command history state moved up to share with sending logic
     val cmdHistory = remember { mutableStateListOf<String>() }
@@ -148,9 +151,9 @@ fun VehicleScreen(service: BluetoothLeService?, deviceName: String?, deviceAddre
         if (connectionState == BluetoothLeService.STATE_CONNECTED && service != null) {
             // throttle (forward/backward on left stick Y)
             // Map leftOffset.y: -1 (UP) -> 100.0 (FULL), 1 (DOWN) -> 0.0 (OFF)
-            // User indicated 30% should be sent properly. 
-            // Most firmware expects a float in some range. Let's stick with 0..100 for now 
-            // as it was already there, but ensure it's calculated exactly as needed.
+            // The hardware expected range might be 0.0 to 1.0 or 0 to 100. 
+            // Looking at FlightCommands.setThrottle(throttle: Float), it puts a float.
+            // If the user's hex 11E3339340 corresponds to 4.6%, then 0..100 is likely correct for the input.
             val throttle = ((-leftOffset.y + 1f) / 2f * 100f).coerceIn(0f, 100f)
             
             // Get saved UUIDs if available to ensure correct characteristic is used
@@ -188,9 +191,12 @@ fun VehicleScreen(service: BluetoothLeService?, deviceName: String?, deviceAddre
             }
 
             // Only send throttle if changed significantly or periodically
+            // We use a small delay to avoid overwhelming the Bluetooth buffer
+            kotlinx.coroutines.delay(50) 
             sendCmd(FlightCommands.setThrottle(throttle))
 
             // Map right stick to Move (forward, right)
+            kotlinx.coroutines.delay(50)
             sendCmd(FlightCommands.move((-rightOffset.y).coerceIn(-1f, 1f), (rightOffset.x).coerceIn(-1f, 1f)))
         }
     }

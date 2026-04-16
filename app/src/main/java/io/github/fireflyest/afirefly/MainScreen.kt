@@ -110,7 +110,7 @@ fun MainScreen() {
                 
                 // If there's a selected device, try to connect if disconnected
                 selectedDeviceUid?.let { uid ->
-                    if (bService.connectionState.value == BluetoothLeService.STATE_DISCONNECTED) {
+                    if (bService.connectionState.value.second == BluetoothLeService.STATE_DISCONNECTED) {
                         bService.connect(uid)
                     }
                 }
@@ -122,12 +122,17 @@ fun MainScreen() {
         }
     }
 
-    LaunchedEffect(Unit) {
+    DisposableEffect(ctx) {
         val intent = Intent(ctx, BluetoothLeService::class.java)
-        ctx.bindService(intent, connection, android.content.Context.BIND_AUTO_CREATE)
+        ctx.bindService(intent, connection, Context.BIND_AUTO_CREATE)
+        onDispose {
+            ctx.unbindService(connection)
+            bluetoothService = null
+        }
     }
 
-    val serviceState by (bluetoothService?.connectionState ?: MutableStateFlow(BluetoothLeService.STATE_DISCONNECTED)).collectAsState()
+    val serviceStatePair by (bluetoothService?.connectionState ?: MutableStateFlow(null to BluetoothLeService.STATE_DISCONNECTED)).collectAsState()
+    val serviceState = serviceStatePair.second
 
     // Load saved devices and quick commands on startup
     LaunchedEffect(Unit) {
@@ -346,23 +351,31 @@ fun MainScreen() {
     }
 
     // Update device status based on Bluetooth service state
-    LaunchedEffect(serviceState) {
+    LaunchedEffect(serviceStatePair) {
+        val (stateAddress, state) = serviceStatePair
         val timestamp = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date())
-        val currentDeviceName = devices.find { it.uid == selectedDeviceUid }?.name ?: "Unknown"
         
-        when (serviceState) {
+        // If address is known, update ONLY that device. 
+        // If address is null (e.g. initial state), fallback to selectedDeviceUid if necessary.
+        val targetUid = stateAddress ?: selectedDeviceUid
+        val currentDeviceName = devices.find { it.uid == targetUid }?.name ?: "Unknown"
+        
+        when (state) {
             BluetoothLeService.STATE_CONNECTED -> {
                 logs.add("$timestamp INFO: Connection established with $currentDeviceName")
                 devices.forEachIndexed { index, device ->
-                    if (device.uid == selectedDeviceUid || device.status == "LINKING") {
+                    if (device.uid == targetUid) {
                         devices[index] = device.copy(status = "ONLINE")
+                    } else if (device.status == "ONLINE" || device.status == "LINKING") {
+                        // Ensure other devices are marked offline since we only support one connection
+                        devices[index] = device.copy(status = "OFFLINE")
                     }
                 }
             }
             BluetoothLeService.STATE_CONNECTING -> {
                 logs.add("$timestamp INFO: Attempting to connect to $currentDeviceName...")
                 devices.forEachIndexed { index, device ->
-                    if (device.uid == selectedDeviceUid) {
+                    if (device.uid == targetUid) {
                         devices[index] = device.copy(status = "LINKING")
                     }
                 }
@@ -373,13 +386,13 @@ fun MainScreen() {
                     logs.add("$timestamp INFO: Disconnected from $currentDeviceName")
                 }
                 devices.forEachIndexed { index, device ->
-                    if (device.uid == selectedDeviceUid || device.status == "ONLINE") {
+                    if (device.uid == targetUid) {
                         devices[index] = device.copy(status = "OFFLINE")
                     }
                 }
             }
         }
-        previousServiceState = serviceState
+        previousServiceState = state
     }
 
     // set system bars to match app surface so status/navigation areas blend
@@ -1603,6 +1616,10 @@ fun MainScreenPreview() {
         MainScreen()
     }
 }
+
+
+
+
 
 
 
