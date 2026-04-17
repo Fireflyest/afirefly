@@ -232,6 +232,14 @@ object FlightCommands {
         val sats = buffer.get().toInt() and 0xFF
         val rssi = buffer.short.toInt()
         
-        return Telemetry(phase, quat, alt, spd, bat, sats, rssi)
+        return Telemetry(
+            flightPhase = phase,
+            quaternion = quat,
+            altitude = alt,
+            velocity = spd,
+            battery = bat,
+            satellites = sats,
+            rssi = rssi
+        )
     }
 }

@@ -231,15 +231,18 @@ class BluetoothLeService : Service() {
     private val gattCallback = object : BluetoothGattCallback() {
         @SuppressLint("MissingPermission")
         override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
+            val deviceName = gatt.device.name ?: "Unknown"
             val deviceAddress = gatt.device.address
             if (newState == BluetoothProfile.STATE_CONNECTED) {
                 _connectionState.value = deviceAddress to STATE_CONNECTED
                 Log.i(TAG, "Connected to GATT server: $deviceAddress")
                 Log.i(TAG, "Attempting to start service discovery: ${gatt.discoverServices()}")
+                LogManager.startSession(this@BluetoothLeService, deviceName)
             } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
                 _connectionState.value = deviceAddress to STATE_DISCONNECTED
                 // Do not clear _discoveredServices here to avoid transient UI clearing
                 Log.i(TAG, "Disconnected from GATT server: $deviceAddress")
+                LogManager.stopSession()
             }
         }
 
@@ -335,6 +338,7 @@ class BluetoothLeService : Service() {
                     // Possible packet found starting with 0xAA
                     val packet = rxBuffer.copyOfRange(0, 64)
                     _receivedData.tryEmit(packet)
+                    LogManager.logPacket(packet)
                     
                     // Remove processed packet from buffer
                     rxBuffer = rxBuffer.copyOfRange(64, rxBuffer.size)
