@@ -154,8 +154,8 @@ fun VehicleScreen(service: BluetoothLeService?, deviceName: String?, deviceAddre
     // Listen to incoming telemetry
     LaunchedEffect(service) {
         service?.receivedData?.collect { data ->
-            // Try 64-byte parser first, then fallback to 32-byte
-            val telemetry = FlightCommands.parseTelemetry64(data) 
+            // Update: Support multi-packet parsing with existing 32-byte or larger data
+            val telemetry = FlightCommands.parseTelemetry64(data, remoteTelemetry) 
                 ?: FlightCommands.parseTelemetry(data)
             
             telemetry?.let {
@@ -480,6 +480,18 @@ fun VehicleTopBar(
             HudStatusItem(Icons.Default.BatteryFull, "${telemetry.battery}%", if (telemetry.battery < 20) Color.Red else Color(0xFF7BDB80))
             HudStatusItem(Icons.Default.SignalCellularAlt, "${telemetry.rssi}dBm", Color(0xFF7BDB80))
             HudStatusItem(Icons.Default.SatelliteAlt, "${telemetry.satellites}", Color(0xFF7BDB80))
+        }
+
+        // PID Charts - Between Center and Right Buttons
+        Row(
+            modifier = Modifier
+                .align(Alignment.CenterEnd)
+                .padding(end = 100.dp), // Space for the 2 buttons on the right
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            PidMiniChart("ANG", telemetry.rollPID, Color(0xFF7BDB80)) // Outer Loop (Angle)
+            PidMiniChart("RATE", telemetry.pitchPID, Color(0xFF007AFF)) // Inner Loop (Rate)
         }
 
         Row(
@@ -1093,6 +1105,55 @@ fun TelemetryItem(label: String, value: String) {
     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         Text(label + ":", color = Color(0xFF7BDB80).copy(alpha = 0.6f), fontSize = 10.sp, fontFamily = FontFamily.Monospace)
         Text(value, color = Color.White.copy(alpha = 0.8f), fontSize = 10.sp, fontFamily = FontFamily.Monospace)
+    }
+}
+
+@Composable
+fun PidMiniChart(label: String, values: FloatArray, color: Color) {
+    val historyP = remember { mutableStateListOf<Float>() }
+    val historyI = remember { mutableStateListOf<Float>() }
+    val historyD = remember { mutableStateListOf<Float>() }
+    
+    // Update history when values change
+    LaunchedEffect(values[0], values[1], values[2]) {
+        historyP.add(values[0]); if (historyP.size > 20) historyP.removeAt(0)
+        historyI.add(values[1]); if (historyI.size > 20) historyI.removeAt(0)
+        historyD.add(values[2]); if (historyD.size > 20) historyD.removeAt(0)
+    }
+
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+        Text(
+            label,
+            color = color.copy(alpha = 0.7f),
+            fontSize = 8.sp,
+            fontWeight = FontWeight.Bold,
+            fontFamily = FontFamily.Monospace
+        )
+        Box(
+            modifier = Modifier
+                .size(width = 60.dp, height = 24.dp)
+                // Remove background and border as requested
+        ) {
+            Canvas(modifier = Modifier.fillMaxSize()) {
+                fun drawHistory(history: List<Float>, lineOps: Float, strokeWidth: Float) {
+                    if (history.size > 1) {
+                        val max = 10f // Fixed scale or dynamic
+                        val min = 0f
+                        val range = max - min
+                        val path = androidx.compose.ui.graphics.Path()
+                        history.forEachIndexed { i, v ->
+                            val x = i * (size.width / (history.size - 1))
+                            val y = size.height - ((v - min).coerceIn(0f, max) / range * size.height)
+                            if (i == 0) path.moveTo(x, y) else path.lineTo(x, y)
+                        }
+                        drawPath(path, color.copy(alpha = lineOps), style = Stroke(strokeWidth))
+                    }
+                }
+                drawHistory(historyP, 1.0f, 1.dp.toPx()) // P - Solid
+                drawHistory(historyI, 0.5f, 0.8.dp.toPx()) // I - Faded
+                drawHistory(historyD, 0.3f, 0.5.dp.toPx()) // D - Very faded
+            }
+        }
     }
 }
 

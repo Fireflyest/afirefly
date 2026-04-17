@@ -28,6 +28,11 @@ object FlightCommands {
     const val CONTROL_MODE_VELOCITY   = 3.toByte()
     const val CONTROL_MODE_POSITION   = 4.toByte()
 
+    /* Telemetry Packet Types */
+    const val PKT_TYPE_STATUS   = 0x01.toByte()    /* 状态包：锁定、模式、电池等 */
+    const val PKT_TYPE_ATTITUDE = 0x02.toByte()    /* 姿态包：四元数、PID等      */
+    const val PKT_TYPE_GPS      = 0x03.toByte()    /* 定位包：经纬度、高度、速度 */
+
     /**
      * Set control mode.
      */
@@ -131,82 +136,112 @@ object FlightCommands {
         val rollPID: FloatArray = floatArrayOf(0f, 0f, 0f), // P, I, D
         val pitchPID: FloatArray = floatArrayOf(0f, 0f, 0f),
         val yawPID: FloatArray = floatArrayOf(0f, 0f, 0f)
-    )
+    ) {
+        override fun equals(other: Any?): Boolean {
+            if (this === other) return true
+            if (javaClass != other?.javaClass) return false
+
+            other as Telemetry
+
+            if (flightPhase != other.flightPhase) return false
+            if (mode != other.mode) return false
+            if (armState != other.armState) return false
+            if (!quaternion.contentEquals(other.quaternion)) return false
+            if (altitude != other.altitude) return false
+            if (velocity != other.velocity) return false
+            if (battery != other.battery) return false
+            if (satellites != other.satellites) return false
+            if (rssi != other.rssi) return false
+            if (latitude != other.latitude) return false
+            if (longitude != other.longitude) return false
+            if (!rollPID.contentEquals(other.rollPID)) return false
+            if (!pitchPID.contentEquals(other.pitchPID)) return false
+            if (!yawPID.contentEquals(other.yawPID)) return false
+
+            return true
+        }
+
+        override fun hashCode(): Int {
+            var result = flightPhase
+            result = 31 * result + mode
+            result = 31 * result + armState
+            result = 31 * result + quaternion.contentHashCode()
+            result = 31 * result + altitude.hashCode()
+            result = 31 * result + velocity.hashCode()
+            result = 31 * result + battery
+            result = 31 * result + satellites
+            result = 31 * result + rssi
+            result = 31 * result + latitude.hashCode()
+            result = 31 * result + longitude.hashCode()
+            result = 31 * result + rollPID.contentHashCode()
+            result = 31 * result + pitchPID.contentHashCode()
+            result = 31 * result + yawPID.contentHashCode()
+            return result
+        }
+    }
 
     /**
-     * Parse 64-byte telemetry packet.
-     * Protocol Definition (Total 64 bytes):
+     * Parse 32-byte telemetry packet with multiple type support.
      * [0] Header (0xAA)
-     * [1] Flight Phase (uint8)
-     * [2] Mode (uint8)
-     * [3] Arm State (uint8)
-     * [4-19] Quaternion (4 x float32)
-     * [20-23] Altitude (float32)
-     * [24-27] Velocity (float32)
-     * [28] Battery % (uint8)
-     * [29] Satellites (uint8)
-     * [30-31] RSSI (int16)
-     * [32-39] Latitude (float64)
-     * [40-47] Longitude (float64)
-     * [48-51] Roll P (float32)
-     * [52-55] Pitch P (float32)
-     * [56-59] Yaw P (float32)
-     * [60-63] Checksum (Addition sum of 0..62)
+     * [1] Packet Type (PKT_TYPE_XXX)
+     * Payload starts at [2]
      */
-    fun parseTelemetry64(data: ByteArray): Telemetry? {
-        if (data.size != 64 || data[0] != 0xAA.toByte()) return null
-
-        // Checksum validation
-        var sum = 0
-        for (i in 0 until 63) {
-            sum += data[i].toInt() and 0xFF
-        }
-        if ((sum and 0xFF).toByte() != data[63]) return null
+    fun parseTelemetry64(data: ByteArray, current: Telemetry): Telemetry? {
+        if (data.size != 32 || data[0] != 0xAA.toByte()) return null
 
         val buffer = ByteBuffer.wrap(data).order(ByteOrder.LITTLE_ENDIAN)
         buffer.get() // Skip Header [0]
+        val type = buffer.get() // Packet Type [1]
 
-        val phase = buffer.get().toInt() and 0xFF // [1]
-        val mode = buffer.get().toInt() and 0xFF // [2]
-        val arm = buffer.get().toInt() and 0xFF  // [3]
-
-        val quat = floatArrayOf(
-            buffer.float, // [4-7]
-            buffer.float, // [8-11]
-            buffer.float, // [12-15]
-            buffer.float  // [16-19]
-        )
-        val alt = buffer.float // [20-23]
-        val spd = buffer.float // [24-27]
-        val bat = buffer.get().toInt() and 0xFF // [28]
-        val sats = buffer.get().toInt() and 0xFF // [29]
-        val rssi = buffer.short.toInt() // [30-31]
-
-        val lat = buffer.double // [32-39]
-        val lon = buffer.double // [40-47]
-
-        // Only sending P values for now to fit in 64 bytes if we include more,
-        // but here we define some PID slots
-        val rP = buffer.float // [48-51]
-        val pP = buffer.float // [52-55]
-        val yP = buffer.float // [56-59]
-
-        return Telemetry(
-            flightPhase = phase,
-            mode = mode,
-            armState = arm,
-            quaternion = quat,
-            altitude = alt,
-            velocity = spd,
-            battery = bat,
-            satellites = sats,
-            rssi = rssi,
-            latitude = lat,
-            longitude = lon,
-            rollPID = floatArrayOf(rP, 0f, 0f),
-            pitchPID = floatArrayOf(pP, 0f, 0f),
-            yawPID = floatArrayOf(yP, 0f, 0f)
-        )
+        return when (type) {
+            PKT_TYPE_STATUS -> {
+                val phase = buffer.get().toInt() and 0xFF
+                val mode = buffer.get().toInt() and 0xFF
+                val arm = buffer.get().toInt() and 0xFF
+                val bat = buffer.get().toInt() and 0xFF
+                val sats = buffer.get().toInt() and 0xFF
+                val rssi = buffer.short.toInt()
+                current.copy(
+                    flightPhase = phase,
+                    mode = mode,
+                    armState = arm,
+                    battery = bat,
+                    satellites = sats,
+                    rssi = rssi
+                )
+            }
+            PKT_TYPE_ATTITUDE -> {
+                val quat = floatArrayOf(
+                    buffer.float, buffer.float, buffer.float, buffer.float
+                )
+                // Angle Loop (Outer)
+                val angP = buffer.float
+                val angI = buffer.float
+                val angD = buffer.float
+                // Rate Loop (Inner)
+                val rateP = buffer.float
+                val rateI = buffer.float
+                val rateD = buffer.float
+                current.copy(
+                    quaternion = quat,
+                    rollPID = floatArrayOf(angP, angI, angD),
+                    pitchPID = floatArrayOf(rateP, rateI, rateD)
+                )
+            }
+            PKT_TYPE_GPS -> {
+                val lat = buffer.double
+                val lon = buffer.double
+                val alt = buffer.float
+                val spd = buffer.float
+                current.copy(
+                    latitude = lat,
+                    longitude = lon,
+                    altitude = alt,
+                    velocity = spd
+                )
+            }
+            else -> null
+        }
     }
 
     /**
