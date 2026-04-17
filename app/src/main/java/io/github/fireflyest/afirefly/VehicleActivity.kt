@@ -37,6 +37,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.tooling.preview.Devices
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.*
 import io.github.fireflyest.afirefly.ui.theme.AfireflyTheme
@@ -154,8 +155,8 @@ fun VehicleScreen(service: BluetoothLeService?, deviceName: String?, deviceAddre
     // Listen to incoming telemetry
     LaunchedEffect(service) {
         service?.receivedData?.collect { data ->
-            // Update: Support multi-packet parsing with existing 32-byte or larger data
-            val telemetry = FlightCommands.parseTelemetry64(data, remoteTelemetry) 
+            // Update: Use the flexible delta parser
+            val telemetry = FlightCommands.parseTelemetryDelta(data, remoteTelemetry) 
                 ?: FlightCommands.parseTelemetry(data)
             
             telemetry?.let {
@@ -282,7 +283,7 @@ fun VehicleScreen(service: BluetoothLeService?, deviceName: String?, deviceAddre
 
         // 5. Center Button Grid
         VehicleControlButtonGrid(
-            modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 40.dp), 
+            modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 40.dp),
             service = service,
             deviceAddress = deviceAddress,
             onCommandSent = { hex -> 
@@ -490,8 +491,7 @@ fun VehicleTopBar(
             horizontalArrangement = Arrangement.spacedBy(12.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            PidMiniChart("ANG", telemetry.rollPID, Color(0xFF7BDB80)) // Outer Loop (Angle)
-            PidMiniChart("RATE", telemetry.pitchPID, Color(0xFF007AFF)) // Inner Loop (Rate)
+            PidMiniChart("RATE PID", telemetry, Color(0xFF7BDB80))
         }
 
         Row(
@@ -655,178 +655,215 @@ fun Attitude3D(quat: FloatArray) {
     // Safety check for quat size
     val finalQuat = if (quat.size == 4) quat else floatArrayOf(1f, 0f, 0f, 0f)
     
-    // Convert quaternion to Euler angles (simplified)
-    // Pitch (around X), Roll (around Y), Yaw (around Z)
+    // Euler angles (Pitch: X, Roll: Y, Yaw: Z)
     val w = finalQuat[0]
     val x = finalQuat[1]
     val y = finalQuat[2]
     val z = finalQuat[3]
 
+    // Standard Quaternion to Euler conversion
     val roll = atan2(2f * (w * x + y * z), 1f - 2f * (x * x + y * y)) * (180f / PI.toFloat())
     val pitch = asin((2f * (w * y - z * x)).coerceIn(-1f, 1f)) * (180f / PI.toFloat())
     val yaw = atan2(2f * (w * z + x * y), 1f - 2f * (y * y + z * z)) * (180f / PI.toFloat())
 
     Box(
-        modifier = Modifier.size(100.dp),
+        modifier = Modifier.size(140.dp),
         contentAlignment = Alignment.Center
     ) {
-        // 1. Static Coordinated System (Fixed XYZ axes)
-        Canvas(modifier = Modifier.fillMaxSize()) {
-            val center = Offset(size.width / 2, size.height / 2)
-            val axisLength = size.width * 0.45f
-            val axisColor = Color.White.copy(alpha = 0.2f)
-            
-            // X-axis (Right)
-            drawLine(axisColor, center, center.copy(x = center.x + axisLength), 1.dp.toPx())
-            // Y-axis (Forward/Up in 2D projection)
-            drawLine(axisColor, center, center.copy(y = center.y - axisLength), 1.dp.toPx())
-            
-            // Labels for axes
-            drawCircle(axisColor, 2.dp.toPx(), center)
-        }
-
-        // 2. Dynamic Drone Model (Represented by a stylized 3D Drone Shape)
+        // 1. Isometric-like 3D Projection Container
+        // We tilt the whole viewport to create a 3D perspective:
+        // rotationX = 45 -> Tilts the XY plane "down" into 3D space
+        // rotationZ = 45 -> Rotates the view so we see the corner of the XY grid
         Box(
             modifier = Modifier
-                .size(80.dp)
+                .fillMaxSize()
                 .graphicsLayer {
-                    rotationX = -pitch
-                    rotationY = roll
-                    rotationZ = -yaw
-                    cameraDistance = 12 * density
+                    rotationX = 45f // Tilt the world plane down 45 degrees
+                    rotationZ = -45f // Rotate the plane to see perspective
+                    cameraDistance = 10 * density
                 },
             contentAlignment = Alignment.Center
         ) {
+            // Static Reference World Grid (Fixed to the ground)
             Canvas(modifier = Modifier.fillMaxSize()) {
                 val center = Offset(size.width / 2, size.height / 2)
-                val armLen = size.width * 0.35f
-                val motorRadius = 6.dp.toPx()
-                val bodyWidth = 12.dp.toPx()
-                val bodyHeight = 20.dp.toPx()
+                val axisLength = size.width * 0.6f
+                val gridAlpha = 0.2f
                 
-                val accentColor = Color(0xFF7BDB80) // Drone green
-                val frameColor = Color.White.copy(alpha = 0.8f)
-                val bodyColor = Color(0xFF25292E)
-                val bottomSurfaceColor = Color(0xFF15191E)
-                val highlightColor = Color.White.copy(alpha = 0.3f)
-
-                // Draw a shadow/depth for the body to make it look "thick"
-                // This draws a darker version slightly offset to represent the sides/bottom
-                drawRoundRect(
-                    color = bottomSurfaceColor,
-                    topLeft = Offset(center.x - bodyWidth / 2, center.y - bodyHeight / 2 + 4.dp.toPx()),
-                    size = Size(bodyWidth, bodyHeight),
-                    cornerRadius = CornerRadius(4.dp.toPx())
+                // World X (Forward - Red)
+                drawLine(
+                    color = Color(0xFFFF5252).copy(alpha = gridAlpha),
+                    start = center,
+                    end = Offset(center.x + axisLength, center.y), 
+                    strokeWidth = 1.dp.toPx()
                 )
-
-                // 1. Draw central body (Battery/Flight Controller area)
-                // Main body block (The Top Surface)
-                drawRoundRect(
-                    color = bodyColor,
-                    topLeft = Offset(center.x - bodyWidth / 2, center.y - bodyHeight / 2),
-                    size = Size(bodyWidth, bodyHeight),
-                    cornerRadius = CornerRadius(4.dp.toPx())
+                // World Y (Right - Green) 
+                drawLine(
+                    color = Color(0xFF7BDB80).copy(alpha = gridAlpha),
+                    start = center,
+                    end = Offset(center.x, center.y + axisLength),
+                    strokeWidth = 1.dp.toPx()
                 )
                 
-                // Add a "top bulge" or protrusion (Gps/Sensor housing) with even more height
-                val protrusionWidth = bodyWidth * 0.7f
-                val protrusionHeight = bodyHeight * 0.4f
-                // Protrusion Side/Shadow
-                drawRoundRect(
-                    color = Color.Black.copy(alpha = 0.5f),
-                    topLeft = Offset(center.x - protrusionWidth / 2, center.y - protrusionHeight / 2 + 2.dp.toPx()),
-                    size = Size(protrusionWidth, protrusionHeight),
-                    cornerRadius = CornerRadius(3.dp.toPx())
-                )
-                // Protrusion Top
-                drawRoundRect(
-                    color = Color(0xFF45494E),
-                    topLeft = Offset(center.x - protrusionWidth / 2, center.y - protrusionHeight / 2),
-                    size = Size(protrusionWidth, protrusionHeight),
-                    cornerRadius = CornerRadius(3.dp.toPx())
-                )
-                
-                // Highlight on the protrusion to show light hitting the "top"
-                drawRoundRect(
-                    color = highlightColor,
-                    topLeft = Offset(center.x - protrusionWidth / 2 + 1.dp.toPx(), center.y - protrusionHeight / 2 + 1.dp.toPx()),
-                    size = Size(protrusionWidth - 2.dp.toPx(), 2.dp.toPx()),
-                    cornerRadius = CornerRadius(1.dp.toPx())
-                )
+                // World Z (Up - Blue) - Note: Z is perpendicular to the tilted XY plane
+                // In this graphicsLayer, Z is vertical to the screen after rotationX.
+            }
 
-                // Body Outline
-                drawRoundRect(
-                    color = frameColor,
-                    topLeft = Offset(center.x - bodyWidth / 2, center.y - bodyHeight / 2),
-                    size = Size(bodyWidth, bodyHeight),
-                    cornerRadius = CornerRadius(4.dp.toPx()),
-                    style = Stroke(1.5.dp.toPx())
-                )
-
-                // 2. Draw 4 Arms (X-config)
-                val angles = listOf(45f, 135f, 225f, 315f)
-                angles.forEachIndexed { index, angleDeg ->
-                    val angleRad = Math.toRadians(angleDeg.toDouble()).toFloat()
-                    val endX = center.x + armLen * cos(angleRad)
-                    val endY = center.y + armLen * sin(angleRad)
+            // 2. Dynamic Rotating Content (Drone + its own coordinate axes)
+            Box(
+                modifier = Modifier
+                    .size(100.dp)
+                    .graphicsLayer {
+                        // These rotations are LOCAL to the already tilted world
+                        rotationX = pitch
+                        rotationY = roll
+                        rotationZ = yaw
+                    },
+                contentAlignment = Alignment.Center
+            ) {
+                // Internal Axes that MOVE WITH the drone
+                Canvas(modifier = Modifier.fillMaxSize()) {
+                    val center = Offset(size.width / 2, size.height / 2)
+                    val axisLength = size.width * 0.45f
                     
-                    // Draw Arm
-                    drawLine(
+                    // Drone local X (Forward - Red)
+                    drawLine(color = Color(0xFFFF5252), start = center, end = Offset(center.x + axisLength, center.y), strokeWidth = 2.dp.toPx())
+                    // Drone local Y (Right - Green)
+                    drawLine(color = Color(0xFF7BDB80), start = center, end = Offset(center.x, center.y + axisLength), strokeWidth = 2.dp.toPx())
+                }
+
+                // The Drone Model itself
+                Canvas(modifier = Modifier.size(60.dp)) {
+                    val center = Offset(size.width / 2, size.height / 2)
+                    val armLen = size.width * 0.35f
+                    val motorRadius = 6.dp.toPx()
+                    val bodyWidth = 12.dp.toPx()
+                    val bodyHeight = 20.dp.toPx()
+                    
+                    val accentColor = Color(0xFF7BDB80) // Drone green
+                    val frameColor = Color.White.copy(alpha = 0.8f)
+                    val bodyColor = Color(0xFF25292E)
+                    val bottomSurfaceColor = Color(0xFF15191E)
+                    val highlightColor = Color.White.copy(alpha = 0.3f)
+
+                    // Draw a shadow/depth for the body to make it look "thick"
+                    // This draws a darker version slightly offset to represent the sides/bottom
+                    drawRoundRect(
+                        color = bottomSurfaceColor,
+                        topLeft = Offset(center.x - bodyWidth / 2, center.y - bodyHeight / 2 + 4.dp.toPx()),
+                        size = Size(bodyWidth, bodyHeight),
+                        cornerRadius = CornerRadius(4.dp.toPx())
+                    )
+
+                    // 1. Draw central body (Battery/Flight Controller area)
+                    // Main body block (The Top Surface)
+                    drawRoundRect(
+                        color = bodyColor,
+                        topLeft = Offset(center.x - bodyWidth / 2, center.y - bodyHeight / 2),
+                        size = Size(bodyWidth, bodyHeight),
+                        cornerRadius = CornerRadius(4.dp.toPx())
+                    )
+                    
+                    // Add a "top bulge" or protrusion (Gps/Sensor housing) with even more height
+                    val protrusionWidth = bodyWidth * 0.7f
+                    val protrusionHeight = bodyHeight * 0.4f
+                    // Protrusion Side/Shadow
+                    drawRoundRect(
+                        color = Color.Black.copy(alpha = 0.5f),
+                        topLeft = Offset(center.x - protrusionWidth / 2, center.y - protrusionHeight / 2 + 2.dp.toPx()),
+                        size = Size(protrusionWidth, protrusionHeight),
+                        cornerRadius = CornerRadius(3.dp.toPx())
+                    )
+                    // Protrusion Top
+                    drawRoundRect(
+                        color = Color(0xFF45494E),
+                        topLeft = Offset(center.x - protrusionWidth / 2, center.y - protrusionHeight / 2),
+                        size = Size(protrusionWidth, protrusionHeight),
+                        cornerRadius = CornerRadius(3.dp.toPx())
+                    )
+                    
+                    // Highlight on the protrusion to show light hitting the "top"
+                    drawRoundRect(
+                        color = highlightColor,
+                        topLeft = Offset(center.x - protrusionWidth / 2 + 1.dp.toPx(), center.y - protrusionHeight / 2 + 1.dp.toPx()),
+                        size = Size(protrusionWidth - 2.dp.toPx(), 2.dp.toPx()),
+                        cornerRadius = CornerRadius(1.dp.toPx())
+                    )
+
+                    // Body Outline
+                    drawRoundRect(
                         color = frameColor,
-                        start = center,
-                        end = Offset(endX, endY),
-                        strokeWidth = 2.dp.toPx()
+                        topLeft = Offset(center.x - bodyWidth / 2, center.y - bodyHeight / 2),
+                        size = Size(bodyWidth, bodyHeight),
+                        cornerRadius = CornerRadius(4.dp.toPx()),
+                        style = Stroke(1.5.dp.toPx())
                     )
-                    
-                    // Draw Motor/Propeller circle at end
-                    // Front motors can be a different color to indicate heading
-                    val mColor = if (index < 2) accentColor else frameColor
-                    
-                    // Draw propeller "disc" to show top surface - Increase visibility
-                    drawCircle(
-                        color = mColor.copy(alpha = 0.2f),
-                        radius = motorRadius * 2f,
-                        center = Offset(endX, endY)
-                    )
-                    
-                    // Thick motor housing (3D look)
-                    drawCircle(
-                        color = Color.Black.copy(alpha = 0.4f),
-                        radius = motorRadius,
-                        center = Offset(endX, endY + 2.dp.toPx())
-                    )
-                    drawCircle(
-                        color = mColor,
-                        radius = motorRadius,
-                        center = Offset(endX, endY),
-                        style = Stroke(2.dp.toPx())
-                    )
-                    
-                    // Small dot for motor center
-                    drawCircle(
-                        color = mColor,
-                        radius = 1.dp.toPx(),
-                        center = Offset(endX, endY)
-                    )
-                }
 
-                // 3. Heading indicator (Forward Arrow on top of body)
-                // Make it look like it's sticking up
-                val headLen = 10.dp.toPx()
-                val path = androidx.compose.ui.graphics.Path().apply {
-                    moveTo(center.x, center.y - bodyHeight / 2 - 6.dp.toPx())
-                    lineTo(center.x - 6.dp.toPx(), center.y - bodyHeight / 2 + headLen)
-                    lineTo(center.x + 6.dp.toPx(), center.y - bodyHeight / 2 + headLen)
-                    close()
+                    // 2. Draw 4 Arms (X-config)
+                    val angles = listOf(45f, 135f, 225f, 315f)
+                    angles.forEachIndexed { index, angleDeg ->
+                        val angleRad = Math.toRadians(angleDeg.toDouble()).toFloat()
+                        val endX = center.x + armLen * cos(angleRad)
+                        val endY = center.y + armLen * sin(angleRad)
+                        
+                        // Draw Arm
+                        drawLine(
+                            color = frameColor,
+                            start = center,
+                            end = Offset(endX, endY),
+                            strokeWidth = 2.dp.toPx()
+                        )
+                        
+                        // Draw Motor/Propeller circle at end
+                        // Front motors can be a different color to indicate heading
+                        val mColor = if (index < 2) accentColor else frameColor
+                        
+                        // Draw propeller "disc" to show top surface - Increase visibility
+                        drawCircle(
+                            color = mColor.copy(alpha = 0.2f),
+                            radius = motorRadius * 2f,
+                            center = Offset(endX, endY)
+                        )
+                        
+                        // Thick motor housing (3D look)
+                        drawCircle(
+                            color = Color.Black.copy(alpha = 0.4f),
+                            radius = motorRadius,
+                            center = Offset(endX, endY + 2.dp.toPx())
+                        )
+                        drawCircle(
+                            color = mColor,
+                            radius = motorRadius,
+                            center = Offset(endX, endY),
+                            style = Stroke(2.dp.toPx())
+                        )
+                        
+                        // Small dot for motor center
+                        drawCircle(
+                            color = mColor,
+                            radius = 1.dp.toPx(),
+                            center = Offset(endX, endY)
+                        )
+                    }
+
+                    // 3. Heading indicator (Forward Arrow on top of body)
+                    // Make it look like it's sticking up
+                    val headLen = 10.dp.toPx()
+                    val path = androidx.compose.ui.graphics.Path().apply {
+                        moveTo(center.x, center.y - bodyHeight / 2 - 6.dp.toPx())
+                        lineTo(center.x - 6.dp.toPx(), center.y - bodyHeight / 2 + headLen)
+                        lineTo(center.x + 6.dp.toPx(), center.y - bodyHeight / 2 + headLen)
+                        close()
+                    }
+                    drawPath(path, color = accentColor)
+                    
+                    // 4. Add a VERY obvious "TOP" label or icon
+                    drawCircle(
+                        color = accentColor,
+                        radius = 2.dp.toPx(),
+                        center = center
+                    )
                 }
-                drawPath(path, color = accentColor)
-                
-                // 4. Add a VERY obvious "TOP" label or icon
-                drawCircle(
-                    color = accentColor,
-                    radius = 2.dp.toPx(),
-                    center = center
-                )
             }
         }
     }
@@ -867,7 +904,7 @@ fun Joystick(
                         val newX = if (isSpringy) 0f else offset.x
                         val newY = if (isSpringyY) 0f else offset.y
                         offset = Offset(newX, newY)
-                        
+
                         // Emit normalized value: Y up is negative, so we negate it for 'onValueChange'
                         onValueChange(Offset(offset.x / maxDist, offset.y / maxDist))
                     },
@@ -876,7 +913,7 @@ fun Joystick(
                         val newX = if (isSpringy) 0f else offset.x
                         val newY = if (isSpringyY) 0f else offset.y
                         offset = Offset(newX, newY)
-                        
+
                         onValueChange(Offset(offset.x / maxDist, offset.y / maxDist))
                     },
                     onDrag = { change, dragAmount ->
@@ -947,8 +984,8 @@ fun VehicleControlButtonGrid(
     }
 
     val buttons = listOf(
-        Triple("ARM", Icons.Default.LockOpen, Color(0xFFFFB4AB)),
-        Triple("DISARM", Icons.Default.Lock, Color(0xFF7BDB80)),
+        Triple("ARM", Icons.Default.LockOpen, Color(0xFF7BDB80)),
+        Triple("DISARM", Icons.Default.Lock, Color(0xFFFFB4AB)),
         Triple("TAKEOFF", Icons.Default.FileUpload, Color(0xFF7BDB80)),
         Triple("LAND", Icons.Default.FileDownload, Color(0xFF7BDB80)),
         Triple("RTL", Icons.Default.Home, Color(0xFFBECABA)),
@@ -976,11 +1013,11 @@ fun VehicleControlButtonGrid(
                         if (isEstop) Modifier.background(Color.Red.copy(alpha = 0.15f))
                         else Modifier
                     )
-                    .clickable { 
+                    .clickable {
                         when(label) {
                             "ARM" -> sendCmd(FlightCommands.arm())
                             "DISARM" -> sendCmd(FlightCommands.disarm())
-                            "TAKEOFF" -> sendCmd(FlightCommands.takeoff(1.0f)) 
+                            "TAKEOFF" -> sendCmd(FlightCommands.takeoff(1.0f))
                             "LAND" -> sendCmd(FlightCommands.land())
                             "E-STOP" -> sendCmd(FlightCommands.emergencyStop())
                             "RTL" -> sendCmd(FlightCommands.hover())
@@ -995,12 +1032,12 @@ fun VehicleControlButtonGrid(
                     Icon(
                         icon, 
                         null, 
-                        tint = if (isEstop) Color.Red else if (label == "TAKEOFF") Color(0xFF7BDB80) else color,
+                        tint = if (isEstop) Color.Red else color,
                         modifier = Modifier.size(18.dp) // Smaller icons from 24dp
                     )
                     Text(
                         text = label,
-                        color = (if (isEstop) Color.Red else if (label == "TAKEOFF") Color(0xFF7BDB80) else color).copy(alpha = 0.7f),
+                        color = (if (isEstop) Color.Red else color).copy(alpha = 0.7f),
                         fontSize = 6.sp, // Even smaller text
                         fontWeight = FontWeight.Bold,
                         fontFamily = FontFamily.Monospace
@@ -1109,55 +1146,64 @@ fun TelemetryItem(label: String, value: String) {
 }
 
 @Composable
-fun PidMiniChart(label: String, values: FloatArray, color: Color) {
-    val historyP = remember { mutableStateListOf<Float>() }
-    val historyI = remember { mutableStateListOf<Float>() }
-    val historyD = remember { mutableStateListOf<Float>() }
+fun PidMiniChart(label: String, telemetry: FlightCommands.Telemetry, baseColor: Color) {
+    val historyRoll = remember { mutableStateListOf<Float>() }
+    val historyPitch = remember { mutableStateListOf<Float>() }
+    val historyYaw = remember { mutableStateListOf<Float>() }
     
-    // Update history when values change
-    LaunchedEffect(values[0], values[1], values[2]) {
-        historyP.add(values[0]); if (historyP.size > 20) historyP.removeAt(0)
-        historyI.add(values[1]); if (historyI.size > 20) historyI.removeAt(0)
-        historyD.add(values[2]); if (historyD.size > 20) historyD.removeAt(0)
+    // Update history with Rate outputs (stored in index 0 of the arrays)
+    LaunchedEffect(telemetry.rollPID[0], telemetry.pitchPID[0], telemetry.yawPID[0]) {
+        historyRoll.add(telemetry.rollPID[0]); if (historyRoll.size > 50) historyRoll.removeAt(0)
+        historyPitch.add(telemetry.pitchPID[0]); if (historyPitch.size > 50) historyPitch.removeAt(0)
+        historyYaw.add(telemetry.yawPID[0]); if (historyYaw.size > 50) historyYaw.removeAt(0)
     }
 
-    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         Text(
             label,
-            color = color.copy(alpha = 0.7f),
+            color = Color.White.copy(alpha = 0.5f),
             fontSize = 8.sp,
             fontWeight = FontWeight.Bold,
             fontFamily = FontFamily.Monospace
         )
         Box(
-            modifier = Modifier
-                .size(width = 60.dp, height = 24.dp)
-                // Remove background and border as requested
+            modifier = Modifier.size(width = 100.dp, height = 32.dp)
         ) {
             Canvas(modifier = Modifier.fillMaxSize()) {
-                fun drawHistory(history: List<Float>, lineOps: Float, strokeWidth: Float) {
+                val centerLine = size.height / 2f
+                
+                // Draw center axis
+                drawLine(
+                    color = Color.White.copy(alpha = 0.1f),
+                    start = Offset(0f, centerLine),
+                    end = Offset(size.width, centerLine),
+                    strokeWidth = 1.dp.toPx()
+                )
+
+                fun drawHistory(history: List<Float>, color: Color) {
                     if (history.size > 1) {
-                        val max = 10f // Fixed scale or dynamic
-                        val min = 0f
-                        val range = max - min
+                        val range = 200f // Scale for PID output (adjust as needed)
                         val path = androidx.compose.ui.graphics.Path()
                         history.forEachIndexed { i, v ->
                             val x = i * (size.width / (history.size - 1))
-                            val y = size.height - ((v - min).coerceIn(0f, max) / range * size.height)
-                            if (i == 0) path.moveTo(x, y) else path.lineTo(x, y)
+                            // Center symmetric scale
+                            val y = centerLine - (v / range * (size.height / 2f))
+                            val clampedY = y.coerceIn(0f, size.height)
+                            if (i == 0) path.moveTo(x, clampedY) else path.lineTo(x, clampedY)
                         }
-                        drawPath(path, color.copy(alpha = lineOps), style = Stroke(strokeWidth))
+                        drawPath(path, color, style = Stroke(1.dp.toPx()))
                     }
                 }
-                drawHistory(historyP, 1.0f, 1.dp.toPx()) // P - Solid
-                drawHistory(historyI, 0.5f, 0.8.dp.toPx()) // I - Faded
-                drawHistory(historyD, 0.3f, 0.5.dp.toPx()) // D - Very faded
+                
+                drawHistory(historyRoll, Color(0xFF7BDB80)) // Roll - Green
+                drawHistory(historyPitch, Color(0xFF007AFF)) // Pitch - Blue
+                drawHistory(historyYaw, Color(0xFFFFCC00)) // Yaw - Yellow
             }
         }
     }
 }
 
-@Preview(showBackground = true)
+@Preview(showBackground = true, device = Devices.AUTOMOTIVE_1024p, widthDp = 1080, heightDp = 480)
 @Composable
 fun GreetingPreview() {
     AfireflyTheme {

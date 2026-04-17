@@ -308,9 +308,8 @@ class BluetoothLeService : Service() {
                 // Append new data to buffer
                 rxBuffer += data
                 
-                // Max buffer size to prevent memory leak (now handling up to 64-byte packets)
-                if (rxBuffer.size > 256) {
-                    // Find latest 0xAA to try and rescue the stream
+                // Max buffer size to prevent memory leak
+                if (rxBuffer.size > 512) {
                     val lastSync = rxBuffer.lastIndexOf(0xAA.toByte())
                     rxBuffer = if (lastSync != -1) {
                         rxBuffer.copyOfRange(lastSync, rxBuffer.size)
@@ -319,29 +318,43 @@ class BluetoothLeService : Service() {
                     }
                 }
 
-                // Process all complete packets in the buffer (now 64 bytes)
-                while (rxBuffer.size >= 64) {
+                // Process variable length packets
+                while (rxBuffer.size >= 2) {
                     val syncIndex = rxBuffer.indexOf(0xAA.toByte())
                     
                     if (syncIndex == -1) {
-                        // No sync byte found, clear buffer
                         rxBuffer = ByteArray(0)
                         break
                     }
                     
                     if (syncIndex > 0) {
-                        // Discard data before sync byte
                         rxBuffer = rxBuffer.copyOfRange(syncIndex, rxBuffer.size)
-                        if (rxBuffer.size < 64) break
+                        if (rxBuffer.size < 2) break
                     }
                     
-                    // Possible packet found starting with 0xAA
-                    val packet = rxBuffer.copyOfRange(0, 64)
-                    _receivedData.tryEmit(packet)
-                    LogManager.logPacket(packet)
-                    
-                    // Remove processed packet from buffer
-                    rxBuffer = rxBuffer.copyOfRange(64, rxBuffer.size)
+                    val type = rxBuffer[1]
+                    val expectedLen = when (type) {
+                        0x01.toByte() -> 9  // STATUS
+                        0x02.toByte() -> 30 // ATTITUDE
+                        0x03.toByte() -> 26 // GPS
+                        else -> {
+                            // Unknown type, skip header and continue
+                            rxBuffer = rxBuffer.copyOfRange(1, rxBuffer.size)
+                            -1
+                        }
+                    }
+
+                    if (expectedLen == -1) continue
+
+                    if (rxBuffer.size >= expectedLen) {
+                        val packet = rxBuffer.copyOfRange(0, expectedLen)
+                        _receivedData.tryEmit(packet)
+                        LogManager.logPacket(packet)
+                        rxBuffer = rxBuffer.copyOfRange(expectedLen, rxBuffer.size)
+                    } else {
+                        // Wait for more data
+                        break
+                    }
                 }
             }
         }
