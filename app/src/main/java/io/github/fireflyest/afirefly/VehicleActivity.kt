@@ -655,84 +655,95 @@ fun Attitude3D(quat: FloatArray) {
     // Safety check for quat size
     val finalQuat = if (quat.size == 4) quat else floatArrayOf(1f, 0f, 0f, 0f)
     
-    // Euler angles (Pitch: X, Roll: Y, Yaw: Z)
-    val w = finalQuat[0]
-    val x = finalQuat[1]
-    val y = finalQuat[2]
-    val z = finalQuat[3]
-
-    // Standard Quaternion to Euler conversion
-    val roll = atan2(2f * (w * x + y * z), 1f - 2f * (x * x + y * y)) * (180f / PI.toFloat())
+    // 1. Standard Quaternion to Euler conversion
+    val w = finalQuat[0]; val x = finalQuat[1]; val y = finalQuat[2]; val z = finalQuat[3]
+    val roll  = atan2(2f * (w * x + y * z), 1f - 2f * (x * x + y * y)) * (180f / PI.toFloat())
     val pitch = asin((2f * (w * y - z * x)).coerceIn(-1f, 1f)) * (180f / PI.toFloat())
-    val yaw = atan2(2f * (w * z + x * y), 1f - 2f * (y * y + z * z)) * (180f / PI.toFloat())
+    val yaw   = atan2(2f * (w * z + x * y), 1f - 2f * (y * y + z * z)) * (180f / PI.toFloat())
 
     Box(
         modifier = Modifier.size(140.dp),
         contentAlignment = Alignment.Center
     ) {
-        // 1. Isometric-like 3D Projection Container
-        // We tilt the whole viewport to create a 3D perspective:
-        // rotationX = 45 -> Tilts the XY plane "down" into 3D space
-        // rotationZ = 45 -> Rotates the view so we see the corner of the XY grid
+        // --- 3D PERSPECTIVE CONTAINER ---
+        // This container defines the 60-degree tilted "world" space.
+        // Everything inside follows this perspective.
         Box(
             modifier = Modifier
                 .fillMaxSize()
                 .graphicsLayer {
-                    rotationX = 45f // Tilt the world plane down 45 degrees
-                    rotationZ = -45f // Rotate the plane to see perspective
-                    cameraDistance = 10 * density
+                    rotationX = 60f // Apply the global tilt once for the entire 3D scene
+                    cameraDistance = 12 * density
                 },
             contentAlignment = Alignment.Center
         ) {
-            // Static Reference World Grid (Fixed to the ground)
+            // 1. World Reference Grid (Static Ground Plane)
+            // This is "flat" in the local 3D space, which after the parent's 60deg tilt 
+            // becomes a horizontal floor.
             Canvas(modifier = Modifier.fillMaxSize()) {
                 val center = Offset(size.width / 2, size.height / 2)
-                val axisLength = size.width * 0.6f
-                val gridAlpha = 0.2f
+                val gridLen = size.width * 0.45f
+                val gridColor = Color.White.copy(alpha = 0.1f)
                 
-                // World X (Forward - Red)
-                drawLine(
-                    color = Color(0xFFFF5252).copy(alpha = gridAlpha),
-                    start = center,
-                    end = Offset(center.x + axisLength, center.y), 
-                    strokeWidth = 1.dp.toPx()
-                )
-                // World Y (Right - Green) 
-                drawLine(
-                    color = Color(0xFF7BDB80).copy(alpha = gridAlpha),
-                    start = center,
-                    end = Offset(center.x, center.y + axisLength),
-                    strokeWidth = 1.dp.toPx()
-                )
+                // Draw a cross representing the world Ground Plane (X and Y)
+                // Since XY is the base, and Y is usually "into" the screen in 2D...
+                // World Forward (Z) - we keep it for reference although it's "Up" in math sometimes
+                // but for HUD, let's draw the floor grid:
+                drawLine(Color.White.copy(alpha = 0.15f), center.copy(y = center.y - gridLen), center.copy(y = center.y + gridLen), 1.dp.toPx())
+                drawLine(Color.White.copy(alpha = 0.15f), center.copy(x = center.x - gridLen), center.copy(x = center.x + gridLen), 1.dp.toPx())
                 
-                // World Z (Up - Blue) - Note: Z is perpendicular to the tilted XY plane
-                // In this graphicsLayer, Z is vertical to the screen after rotationX.
+                // Subtle boundary circle on the floor
+                drawCircle(gridColor, gridLen, center, style = Stroke(0.5.dp.toPx()))
             }
 
-            // 2. Dynamic Rotating Content (Drone + its own coordinate axes)
+            // 2. Dynamic Flying Object (Drone + Local Axis)
+            // This Box inherits the 60deg tilt and adds its own physical rotation.
             Box(
                 modifier = Modifier
                     .size(100.dp)
                     .graphicsLayer {
-                        // These rotations are LOCAL to the already tilted world
-                        rotationX = pitch
+                        // Order of application is important in Compose (Z -> Y -> X)
+                        // We apply drone's attitude relative to the "flat" ground plane.
+                        rotationX = -pitch
                         rotationY = roll
-                        rotationZ = yaw
+                        rotationZ = -yaw
                     },
                 contentAlignment = Alignment.Center
             ) {
-                // Internal Axes that MOVE WITH the drone
+                // Local Coordinate Axes (Z for Forward/Red, X for Right/Green, Y for Up/Blue)
+                // Following user's "XY plane is base, Z is forward"
                 Canvas(modifier = Modifier.fillMaxSize()) {
                     val center = Offset(size.width / 2, size.height / 2)
-                    val axisLength = size.width * 0.45f
+                    val axisLen = size.width * 0.45f
                     
-                    // Drone local X (Forward - Red)
-                    drawLine(color = Color(0xFFFF5252), start = center, end = Offset(center.x + axisLength, center.y), strokeWidth = 2.dp.toPx())
-                    // Drone local Y (Right - Green)
-                    drawLine(color = Color(0xFF7BDB80), start = center, end = Offset(center.x, center.y + axisLength), strokeWidth = 2.dp.toPx())
+                    // User requested: XY is ground, Z is Forward.
+                    // In a top-down view of the ground (before 60deg tilt):
+                    // Y axis points "up" (Forward relative to screen)
+                    // X axis points "right" (Right relative to screen)
+                    
+                    // So we map Z-Forward to the screen's vertical axis (Y)
+                    // Drone local Z-axis (Forward - Red)
+                    drawLine(
+                        color = Color(0xFFFF5252),
+                        start = center,
+                        end = Offset(center.x, center.y - axisLen),
+                        strokeWidth = 2.dp.toPx()
+                    )
+                    // Drone local X-axis (Right - Green)
+                    drawLine(
+                        color = Color(0xFF7BDB80),
+                        start = center,
+                        end = Offset(center.x + axisLen, center.y),
+                        strokeWidth = 2.dp.toPx()
+                    )
+                    
+                    // Drone local Vertical-axis (Up - Blue)
+                    // This is 'Vertical' to the XY plane.
+                    // We'll draw it as a small dot or a tiny line to represent height.
+                    drawCircle(Color(0xFF42A5F5), 3.dp.toPx(), center)
                 }
 
-                // The Drone Model itself
+                // The Drone 3D Model
                 Canvas(modifier = Modifier.size(60.dp)) {
                     val center = Offset(size.width / 2, size.height / 2)
                     val armLen = size.width * 0.35f
@@ -817,7 +828,7 @@ fun Attitude3D(quat: FloatArray) {
                         // Draw Motor/Propeller circle at end
                         // Front motors can be a different color to indicate heading
                         val mColor = if (index < 2) accentColor else frameColor
-                        
+                            
                         // Draw propeller "disc" to show top surface - Increase visibility
                         drawCircle(
                             color = mColor.copy(alpha = 0.2f),
