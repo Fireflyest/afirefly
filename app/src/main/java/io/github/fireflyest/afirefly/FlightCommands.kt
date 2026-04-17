@@ -118,19 +118,103 @@ object FlightCommands {
      */
     data class Telemetry(
         val flightPhase: Int = 0,
+        val mode: Int = 0,
+        val armState: Int = 0,
         val quaternion: FloatArray = floatArrayOf(1f, 0f, 0f, 0f),
         val altitude: Float = 0f,
         val velocity: Float = 0f,
         val battery: Int = 0,
         val satellites: Int = 0,
-        val rssi: Int = 0
+        val rssi: Int = 0,
+        val latitude: Double = 0.0,
+        val longitude: Double = 0.0,
+        val rollPID: FloatArray = floatArrayOf(0f, 0f, 0f), // P, I, D
+        val pitchPID: FloatArray = floatArrayOf(0f, 0f, 0f),
+        val yawPID: FloatArray = floatArrayOf(0f, 0f, 0f)
     )
 
     /**
-     * Parse 32-byte telemetry packet.
+     * Parse 64-byte telemetry packet.
+     * Protocol Definition (Total 64 bytes):
+     * [0] Header (0xAA)
+     * [1] Flight Phase (uint8)
+     * [2] Mode (uint8)
+     * [3] Arm State (uint8)
+     * [4-19] Quaternion (4 x float32)
+     * [20-23] Altitude (float32)
+     * [24-27] Velocity (float32)
+     * [28] Battery % (uint8)
+     * [29] Satellites (uint8)
+     * [30-31] RSSI (int16)
+     * [32-39] Latitude (float64)
+     * [40-47] Longitude (float64)
+     * [48-51] Roll P (float32)
+     * [52-55] Pitch P (float32)
+     * [56-59] Yaw P (float32)
+     * [60-63] Checksum (Addition sum of 0..62)
+     */
+    fun parseTelemetry64(data: ByteArray): Telemetry? {
+        if (data.size != 64 || data[0] != 0xAA.toByte()) return null
+
+        // Checksum validation
+        var sum = 0
+        for (i in 0 until 63) {
+            sum += data[i].toInt() and 0xFF
+        }
+        if ((sum and 0xFF).toByte() != data[63]) return null
+
+        val buffer = ByteBuffer.wrap(data).order(ByteOrder.LITTLE_ENDIAN)
+        buffer.get() // Skip Header [0]
+
+        val phase = buffer.get().toInt() and 0xFF // [1]
+        val mode = buffer.get().toInt() and 0xFF // [2]
+        val arm = buffer.get().toInt() and 0xFF  // [3]
+
+        val quat = floatArrayOf(
+            buffer.float, // [4-7]
+            buffer.float, // [8-11]
+            buffer.float, // [12-15]
+            buffer.float  // [16-19]
+        )
+        val alt = buffer.float // [20-23]
+        val spd = buffer.float // [24-27]
+        val bat = buffer.get().toInt() and 0xFF // [28]
+        val sats = buffer.get().toInt() and 0xFF // [29]
+        val rssi = buffer.short.toInt() // [30-31]
+
+        val lat = buffer.double // [32-39]
+        val lon = buffer.double // [40-47]
+
+        // Only sending P values for now to fit in 64 bytes if we include more,
+        // but here we define some PID slots
+        val rP = buffer.float // [48-51]
+        val pP = buffer.float // [52-55]
+        val yP = buffer.float // [56-59]
+
+        return Telemetry(
+            flightPhase = phase,
+            mode = mode,
+            armState = arm,
+            quaternion = quat,
+            altitude = alt,
+            velocity = spd,
+            battery = bat,
+            satellites = sats,
+            rssi = rssi,
+            latitude = lat,
+            longitude = lon,
+            rollPID = floatArrayOf(rP, 0f, 0f),
+            pitchPID = floatArrayOf(pP, 0f, 0f),
+            yawPID = floatArrayOf(yP, 0f, 0f)
+        )
+    }
+
+    /**
+     * Legacy 32-byte parser (optional/fallback)
      */
     fun parseTelemetry(data: ByteArray): Telemetry? {
-        if (data.size < 30 || data[0] != 0xAA.toByte()) return null
+        // Strict length requirement for reassembled packets
+        if (data.size != 32 || data[0] != 0xAA.toByte()) return null
         
         val buffer = ByteBuffer.wrap(data).order(ByteOrder.LITTLE_ENDIAN)
         buffer.get() // Skip Header

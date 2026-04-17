@@ -39,6 +39,10 @@ class BluetoothLeService : Service() {
     private val _writeResult = MutableSharedFlow<Pair<ByteArray, Int>>(extraBufferCapacity = 64)
     val writeResult: SharedFlow<Pair<ByteArray, Int>> = _writeResult
 
+    // Buffer to handle fragmented telemetry data
+    private var rxBuffer = ByteArray(0)
+    private val rxBufferLock = Any()
+
     private val binder = LocalBinder()
 
     inner class LocalBinder : Binder() {
@@ -153,7 +157,7 @@ class BluetoothLeService : Service() {
         @Suppress("DEPRECATION")
         val data = characteristic.value
         if (data != null && data.isNotEmpty()) {
-            _receivedData.tryEmit(data)
+            gattCallback.processIncomingData(data)
         }
     }
 
@@ -293,7 +297,49 @@ class BluetoothLeService : Service() {
             characteristic: BluetoothGattCharacteristic,
             value: ByteArray
         ) {
-            _receivedData.tryEmit(value)
+            processIncomingData(value)
+        }
+
+        internal fun processIncomingData(data: ByteArray) {
+            synchronized(rxBufferLock) {
+                // Append new data to buffer
+                rxBuffer += data
+                
+                // Max buffer size to prevent memory leak (now handling up to 64-byte packets)
+                if (rxBuffer.size > 256) {
+                    // Find latest 0xAA to try and rescue the stream
+                    val lastSync = rxBuffer.lastIndexOf(0xAA.toByte())
+                    rxBuffer = if (lastSync != -1) {
+                        rxBuffer.copyOfRange(lastSync, rxBuffer.size)
+                    } else {
+                        ByteArray(0)
+                    }
+                }
+
+                // Process all complete packets in the buffer (now 64 bytes)
+                while (rxBuffer.size >= 64) {
+                    val syncIndex = rxBuffer.indexOf(0xAA.toByte())
+                    
+                    if (syncIndex == -1) {
+                        // No sync byte found, clear buffer
+                        rxBuffer = ByteArray(0)
+                        break
+                    }
+                    
+                    if (syncIndex > 0) {
+                        // Discard data before sync byte
+                        rxBuffer = rxBuffer.copyOfRange(syncIndex, rxBuffer.size)
+                        if (rxBuffer.size < 64) break
+                    }
+                    
+                    // Possible packet found starting with 0xAA
+                    val packet = rxBuffer.copyOfRange(0, 64)
+                    _receivedData.tryEmit(packet)
+                    
+                    // Remove processed packet from buffer
+                    rxBuffer = rxBuffer.copyOfRange(64, rxBuffer.size)
+                }
+            }
         }
 
         @Deprecated("Deprecated in Java")

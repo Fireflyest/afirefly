@@ -270,6 +270,9 @@ fun MainScreen() {
             }
 
             service.receivedData.collect { data ->
+                // Check if VehicleActivity is active to avoid redundant logging
+                if (VehicleActivity.isVehicleActivityActive) return@collect
+
                 val timestamp = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date())
                 val displayData = if (isHexGlobal) {
                     data.joinToString("") { "%02X ".format(it) }
@@ -1616,11 +1619,5 @@ fun MainScreenPreview() {
         MainScreen()
     }
 }
-
-
-
-
-
-
 
 

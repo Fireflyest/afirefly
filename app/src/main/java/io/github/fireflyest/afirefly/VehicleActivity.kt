@@ -49,6 +49,10 @@ class VehicleActivity : ComponentActivity() {
     private val _bluetoothService = mutableStateOf<BluetoothLeService?>(null)
     private var deviceAddress: String? = null
 
+    companion object {
+        var isVehicleActivityActive = false
+    }
+
     private val connection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
             val binder = service as BluetoothLeService.LocalBinder
@@ -98,6 +102,16 @@ class VehicleActivity : ComponentActivity() {
         }
     }
 
+    override fun onResume() {
+        super.onResume()
+        isVehicleActivityActive = true
+    }
+
+    override fun onPause() {
+        super.onPause()
+        isVehicleActivityActive = false
+    }
+
     override fun onDestroy() {
         super.onDestroy()
         unbindService(connection)
@@ -140,7 +154,11 @@ fun VehicleScreen(service: BluetoothLeService?, deviceName: String?, deviceAddre
     // Listen to incoming telemetry
     LaunchedEffect(service) {
         service?.receivedData?.collect { data ->
-            FlightCommands.parseTelemetry(data)?.let {
+            // Try 64-byte parser first, then fallback to 32-byte
+            val telemetry = FlightCommands.parseTelemetry64(data) 
+                ?: FlightCommands.parseTelemetry(data)
+            
+            telemetry?.let {
                 remoteTelemetry = it
             }
         }
@@ -1015,6 +1033,9 @@ fun VehicleBottomBar(
                 TelemetryItem("QUAT", String.format(Locale.US, "W:%.2f X:%.2f Y:%.2f Z:%.2f", q[0], q[1], q[2], q[3]))
                 TelemetryItem("ALT", String.format(Locale.US, "%.2fm", telemetry.altitude))
                 TelemetryItem("SPD", String.format(Locale.US, "%.2fm/s", telemetry.velocity))
+                if (telemetry.latitude != 0.0) {
+                    TelemetryItem("GPS", String.format(Locale.US, "%.5f,%.5f", telemetry.latitude, telemetry.longitude))
+                }
             }
 
             // Right-aligned history preview
