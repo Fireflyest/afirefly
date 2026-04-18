@@ -182,12 +182,14 @@ object FlightCommands {
 
     /**
      * Parse telemetry packet with multiple type support.
+     * All packets are normalized to 32 bytes from hardware.
      * [0] Header (0xAA)
      * [1] Packet Type (PKT_TYPE_XXX)
      * Payload starts at [2]
      */
     fun parseTelemetryDelta(data: ByteArray, current: Telemetry): Telemetry? {
-        if (data.size < 2 || data[0] != 0xAA.toByte()) return null
+        // Hardware sends 32-byte fixed length packets
+        if (data.size != 32 || data[0] != 0xAA.toByte()) return null
 
         val buffer = ByteBuffer.wrap(data).order(ByteOrder.LITTLE_ENDIAN)
         buffer.get() // Skip Header [0]
@@ -195,7 +197,7 @@ object FlightCommands {
 
         return when (type) {
             PKT_TYPE_STATUS -> {
-                if (data.size < 9) return null
+                // status_buf[2]: flightPhase, [3]: mode, [4]: isArmed, [5]: battery, [6]: satellites, [7-8]: rssi
                 val phase = buffer.get().toInt() and 0xFF
                 val mode = buffer.get().toInt() and 0xFF
                 val arm = buffer.get().toInt() and 0xFF
@@ -212,28 +214,25 @@ object FlightCommands {
                 )
             }
             PKT_TYPE_ATTITUDE -> {
-                if (data.size < 30) return null
-                // Quaternion: w, x, y, z as requested
+                // att_buf[2-17]: quat (w,x,y,z), [18-21]: rollRate, [22-25]: pitchRate, [26-29]: yawRate
                 val quat = floatArrayOf(
-                    buffer.float, // w
-                    buffer.float, // x
-                    buffer.float, // y
-                    buffer.float  // z
+                    buffer.float, // w ([2-5])
+                    buffer.float, // x ([6-9])
+                    buffer.float, // y ([10-13])
+                    buffer.float  // z ([14-17])
                 )
-                // PID Outputs (not P,I,D constants)
-                val rateRollOutput = buffer.float
-                val ratePitchOutput = buffer.float
-                val rateYawOutput = buffer.float
+                val rollRate = buffer.float  // [18-21]
+                val pitchRate = buffer.float // [22-25]
+                val yawRate = buffer.float   // [26-29]
                 
                 current.copy(
                     quaternion = quat,
-                    rollPID = floatArrayOf(rateRollOutput, 0f, 0f), // Use first element for output
-                    pitchPID = floatArrayOf(ratePitchOutput, 0f, 0f),
-                    yawPID = floatArrayOf(rateYawOutput, 0f, 0f)
+                    rollPID = floatArrayOf(rollRate, 0f, 0f),
+                    pitchPID = floatArrayOf(pitchRate, 0f, 0f),
+                    yawPID = floatArrayOf(yawRate, 0f, 0f)
                 )
             }
             PKT_TYPE_GPS -> {
-                if (data.size < 26) return null
                 val lat = buffer.double
                 val lon = buffer.double
                 val alt = buffer.float
@@ -245,7 +244,10 @@ object FlightCommands {
                     velocity = spd
                 )
             }
-            else -> null
+            else -> {
+                // 收到未知类型包不应该修改 current 状态
+                current
+            }
         }
     }
 

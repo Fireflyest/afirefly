@@ -66,10 +66,11 @@ object LogManager {
     }
 
     /**
-     * Log a 64-byte telemetry packet in Hex format with timestamp.
+     * Log a telemetry packet in Hex format with timestamp.
      */
     fun logPacket(packet: ByteArray) {
-        if (packet.size != 64) return
+        // Remove 64-byte strict length check to allow variable length packets
+        if (packet.isEmpty()) return
 
         executor.execute {
             try {

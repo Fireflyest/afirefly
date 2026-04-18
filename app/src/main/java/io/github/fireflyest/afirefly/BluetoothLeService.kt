@@ -309,7 +309,7 @@ class BluetoothLeService : Service() {
                 rxBuffer += data
                 
                 // Max buffer size to prevent memory leak
-                if (rxBuffer.size > 512) {
+                if (rxBuffer.size > 1024) {
                     val lastSync = rxBuffer.lastIndexOf(0xAA.toByte())
                     rxBuffer = if (lastSync != -1) {
                         rxBuffer.copyOfRange(lastSync, rxBuffer.size)
@@ -332,27 +332,28 @@ class BluetoothLeService : Service() {
                         if (rxBuffer.size < 2) break
                     }
                     
+                    // Validate Packet Type (1: Status, 2: Attitude, 3: GPS)
                     val type = rxBuffer[1]
-                    val expectedLen = when (type) {
-                        0x01.toByte() -> 9  // STATUS
-                        0x02.toByte() -> 30 // ATTITUDE
-                        0x03.toByte() -> 26 // GPS
-                        else -> {
-                            // Unknown type, skip header and continue
-                            rxBuffer = rxBuffer.copyOfRange(1, rxBuffer.size)
-                            -1
-                        }
+                    if (type != 0x01.toByte() && type != 0x02.toByte() && type != 0x03.toByte()) {
+                        // Not a valid type, skip this 0xAA and find next
+                        rxBuffer = rxBuffer.copyOfRange(1, rxBuffer.size)
+                        continue
                     }
 
-                    if (expectedLen == -1) continue
-
+                    val expectedLen = 32
                     if (rxBuffer.size >= expectedLen) {
                         val packet = rxBuffer.copyOfRange(0, expectedLen)
+                        
+                        // CRC Check (Optional but recommended if bytes [30-31] are CRC)
+                        // In the user's log, AA02 is appended, we treat it as part of stream
+                        
                         _receivedData.tryEmit(packet)
                         LogManager.logPacket(packet)
+                        
+                        // Advance buffer by 32 bytes
                         rxBuffer = rxBuffer.copyOfRange(expectedLen, rxBuffer.size)
                     } else {
-                        // Wait for more data
+                        // Wait for more data to complete the 32-byte packet
                         break
                     }
                 }

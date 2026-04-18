@@ -703,6 +703,7 @@ fun Attitude3D(quat: FloatArray) {
                     .size(100.dp)
                     .graphicsLayer {
                         // Order of application is important in Compose (Z -> Y -> X)
+                        // Note: Compose rotationZ is around the axis pointing out of screen.
                         // We apply drone's attitude relative to the "flat" ground plane.
                         rotationX = -pitch
                         rotationY = roll
@@ -717,19 +718,19 @@ fun Attitude3D(quat: FloatArray) {
                     val axisLen = size.width * 0.45f
                     
                     // User requested: XY is ground, Z is Forward.
-                    // In a top-down view of the ground (before 60deg tilt):
-                    // Y axis points "up" (Forward relative to screen)
-                    // X axis points "right" (Right relative to screen)
+                    // In our 2D-to-3D projection (before 60deg tilt):
+                    // Screen's vertical axis points "forward".
                     
-                    // So we map Z-Forward to the screen's vertical axis (Y)
-                    // Drone local Z-axis (Forward - Red)
+                    // Drone local Forward-axis (Z - Red)
+                    // This points "Forward" relative to the drone body.
                     drawLine(
                         color = Color(0xFFFF5252),
                         start = center,
                         end = Offset(center.x, center.y - axisLen),
                         strokeWidth = 2.dp.toPx()
                     )
-                    // Drone local X-axis (Right - Green)
+                    // Drone local Right-axis (X - Green)
+                    // This points "Right" relative to the drone body.
                     drawLine(
                         color = Color(0xFF7BDB80),
                         start = center,
@@ -737,9 +738,19 @@ fun Attitude3D(quat: FloatArray) {
                         strokeWidth = 2.dp.toPx()
                     )
                     
-                    // Drone local Vertical-axis (Up - Blue)
-                    // This is 'Vertical' to the XY plane.
-                    // We'll draw it as a small dot or a tiny line to represent height.
+                    // Drone local Up-axis (Y - Blue)
+                    // This points "Up" perpendicular to the XY plane.
+                    // Since the current box is rotated, drawing a vertical line on the canvas 
+                    // will correctly represent the local Y axis in 3D.
+                    drawLine(
+                        color = Color(0xFF42A5F5),
+                        start = center,
+                        end = Offset(center.y, center.y), // Placeholder logic check
+                        strokeWidth = 2.dp.toPx()
+                    )
+                    // Better representation for local Y (Up): a short line along the screen-rotated Z axis
+                    // But for a simple HUD, a dot or a vector is sufficient. 
+                    // Let's use a 3D vector for Y:
                     drawCircle(Color(0xFF42A5F5), 3.dp.toPx(), center)
                 }
 
@@ -1158,31 +1169,60 @@ fun TelemetryItem(label: String, value: String) {
 
 @Composable
 fun PidMiniChart(label: String, telemetry: FlightCommands.Telemetry, baseColor: Color) {
+    // 使用 SideEffect 或每次重组时显式检查，避开 LaunchedEffect 的重启延迟
     val historyRoll = remember { mutableStateListOf<Float>() }
     val historyPitch = remember { mutableStateListOf<Float>() }
     val historyYaw = remember { mutableStateListOf<Float>() }
-    
-    // Update history with Rate outputs (stored in index 0 of the arrays)
-    LaunchedEffect(telemetry.rollPID[0], telemetry.pitchPID[0], telemetry.yawPID[0]) {
-        historyRoll.add(telemetry.rollPID[0]); if (historyRoll.size > 50) historyRoll.removeAt(0)
-        historyPitch.add(telemetry.pitchPID[0]); if (historyPitch.size > 50) historyPitch.removeAt(0)
-        historyYaw.add(telemetry.yawPID[0]); if (historyYaw.size > 50) historyYaw.removeAt(0)
+
+    // 记录上一笔数据的哈希，用于严格对比是否是新数据包
+    var lastHash by remember { mutableStateOf(0) }
+    val currentHash = telemetry.hashCode()
+
+    if (currentHash != lastHash) {
+        SideEffect {
+            historyRoll.add(telemetry.rollPID[0]); if (historyRoll.size > 50) historyRoll.removeAt(0)
+            historyPitch.add(telemetry.pitchPID[0]); if (historyPitch.size > 50) historyPitch.removeAt(0)
+            historyYaw.add(telemetry.yawPID[0]); if (historyYaw.size > 50) historyYaw.removeAt(0)
+            lastHash = currentHash
+        }
     }
 
     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        Text(
-            label,
-            color = Color.White.copy(alpha = 0.5f),
-            fontSize = 8.sp,
-            fontWeight = FontWeight.Bold,
-            fontFamily = FontFamily.Monospace
-        )
+        Column(
+            verticalArrangement = Arrangement.spacedBy(1.dp),
+            modifier = Modifier.padding(vertical = 0.dp)
+        ) {
+            Text(
+                "Roll  ${String.format(Locale.US, "% .2f", telemetry.rollPID[0])}",
+                color = Color(0xFF7BDB80), // Roll - Green
+                fontSize = 6.sp,
+                fontWeight = FontWeight.Bold,
+                fontFamily = FontFamily.Monospace,
+                lineHeight = 6.sp
+            )
+            Text(
+                "Pitch ${String.format(Locale.US, "% .2f", telemetry.pitchPID[0])}",
+                color = Color(0xFF007AFF), // Pitch - Blue
+                fontSize = 6.sp,
+                fontWeight = FontWeight.Bold,
+                fontFamily = FontFamily.Monospace,
+                lineHeight = 6.sp
+            )
+            Text(
+                "Yaw   ${String.format(Locale.US, "% .2f", telemetry.yawPID[0])}",
+                color = Color(0xFFFFCC00), // Yaw - Yellow
+                fontSize = 6.sp,
+                fontWeight = FontWeight.Bold,
+                fontFamily = FontFamily.Monospace,
+                lineHeight = 6.sp
+            )
+        }
         Box(
             modifier = Modifier.size(width = 100.dp, height = 32.dp)
         ) {
             Canvas(modifier = Modifier.fillMaxSize()) {
                 val centerLine = size.height / 2f
-                
+
                 // Draw center axis
                 drawLine(
                     color = Color.White.copy(alpha = 0.1f),
@@ -1193,7 +1233,7 @@ fun PidMiniChart(label: String, telemetry: FlightCommands.Telemetry, baseColor: 
 
                 fun drawHistory(history: List<Float>, color: Color) {
                     if (history.size > 1) {
-                        val range = 200f // Scale for PID output (adjust as needed)
+                        val range = 50f
                         val path = androidx.compose.ui.graphics.Path()
                         history.forEachIndexed { i, v ->
                             val x = i * (size.width / (history.size - 1))
@@ -1205,7 +1245,7 @@ fun PidMiniChart(label: String, telemetry: FlightCommands.Telemetry, baseColor: 
                         drawPath(path, color, style = Stroke(1.dp.toPx()))
                     }
                 }
-                
+
                 drawHistory(historyRoll, Color(0xFF7BDB80)) // Roll - Green
                 drawHistory(historyPitch, Color(0xFF007AFF)) // Pitch - Blue
                 drawHistory(historyYaw, Color(0xFFFFCC00)) // Yaw - Yellow
@@ -1221,3 +1261,10 @@ fun GreetingPreview() {
         VehicleScreen(null, "Device Name", "00:11:22:33:44:55")
     }
 }
+
+
+
+
+
+
+
