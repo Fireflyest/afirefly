@@ -22,21 +22,22 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.shadow
-import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.rotate
-import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.text.drawText
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.font.Typeface
 import androidx.compose.ui.tooling.preview.Devices
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.*
@@ -120,159 +121,141 @@ class VehicleActivity : ComponentActivity() {
 }
 
 @Composable
-fun VehicleScreen(service: BluetoothLeService?, deviceName: String?, deviceAddress: String?) {
-    // UI state for joysticks
-    // throttle (left stick Y) starts at 0 (bottom). Map 0..100% to offset.
-    // In our joystick mapping in detectDragGestures: offset.y of (radius-knobRadius) is bottom (-1.0 in normalized)
-    // Actually, let's just initialize it to the bottom position:
-    // radius = 88.dp, knobRadius = 28.dp -> maxDist = 60.dp
-    // But we don't have density here easily. 
-    // Let's use normalized coordinates in Joystick if possible, or just set it to a large enough value.
-    // Re-evaluating: let's change how Joystick initializes or how VehicleScreen starts.
-    
-    // In Joystick component: onValueChange(Offset(offset.x / maxDist, -offset.y / maxDist))
-    // If we want throttle 0, we want -offset.y / maxDist = 0? 
-    // Wait, the current logic is:
-    // val throttle = ((-leftOffset.y + 1f) / 2f * 100f).coerceIn(0f, 100f)
-    // If leftOffset.y = 1f (bottom), throttle = ((-1 + 1)/2)*100 = 0.
-    // If leftOffset.y = -1f (top), throttle = ((1 + 1)/2)*100 = 100.
-    // If leftOffset.y = 0f (center), throttle = ((0 + 1)/2)*100 = 50.
-    // So we want leftOffset.y to start at 1f.
+fun VehicleScreen(
+    service: BluetoothLeService?,
+    deviceName: String?,
+    deviceAddress: String?
+) {
     var leftOffset by remember { mutableStateOf(Offset(0f, 1f)) }
     var rightOffset by remember { mutableStateOf(Offset.Zero) }
 
-    val connectionStatePair by (service?.connectionState ?: MutableStateFlow(null to BluetoothLeService.STATE_DISCONNECTED)).collectAsState()
-    // Validate that the state update belongs to the device this Activity is interested in
+    val connectionStatePair by (
+            service?.connectionState
+                ?: MutableStateFlow(null to BluetoothLeService.STATE_DISCONNECTED)
+            ).collectAsState()
     val isCorrectDevice = connectionStatePair.first == deviceAddress
-    val connectionState = if (isCorrectDevice) connectionStatePair.second else BluetoothLeService.STATE_DISCONNECTED
-    
-    // Command history state moved up to share with sending logic
+    val connectionState = if (isCorrectDevice) connectionStatePair.second
+    else BluetoothLeService.STATE_DISCONNECTED
+
     val cmdHistory = remember { mutableStateListOf<String>() }
-    
-    // Remote states from drone
     var remoteTelemetry by remember { mutableStateOf(FlightCommands.Telemetry()) }
 
-    // Listen to incoming telemetry
     LaunchedEffect(service) {
         service?.receivedData?.collect { data ->
-            // Update: Use the flexible delta parser
-            val telemetry = FlightCommands.parseTelemetryDelta(data, remoteTelemetry) 
+            val telemetry = FlightCommands.parseTelemetryDelta(data, remoteTelemetry)
                 ?: FlightCommands.parseTelemetry(data)
-            
-            telemetry?.let {
-                remoteTelemetry = it
-            }
+            telemetry?.let { remoteTelemetry = it }
         }
     }
 
-    // Periodically send joystick data if connected
     LaunchedEffect(leftOffset, rightOffset, connectionState) {
         if (connectionState == BluetoothLeService.STATE_CONNECTED && service != null) {
-            // throttle (forward/backward on left stick Y)
-            // Map leftOffset.y: -1 (UP) -> 100.0 (FULL), 1 (DOWN) -> 0.0 (OFF)
-            // The hardware expected range is 0 to 100 according to user feedback
             val throttle = ((-leftOffset.y + 1f) / 2f * 100f).coerceIn(0f, 100f)
-            
-            // Get saved UUIDs if available to ensure correct characteristic is used
             val prefs = service.getSharedPreferences("afirefly_prefs", Context.MODE_PRIVATE)
             val savedJson = prefs.getString("saved_devices", "[]")
             val devicesArr = try { JSONArray(savedJson) } catch (e: Exception) { JSONArray() }
-            var sUuid: UUID? = null
-            var cUuid: UUID? = null
-            
+            var sUuid: UUID? = null; var cUuid: UUID? = null
             for (i in 0 until devicesArr.length()) {
                 val obj = devicesArr.getJSONObject(i)
                 if (obj.getString("uid") == deviceAddress) {
-                    val sStr = obj.optString("serviceUuid", "")
-                    val cStr = obj.optString("charUuid", "")
-                    if (sStr.isNotEmpty() && cStr.isNotEmpty()) {
-                        sUuid = UUID.fromString(sStr)
-                        cUuid = UUID.fromString(cStr)
-                    }
-                    break
+                    val s = obj.optString("serviceUuid", "")
+                    val c = obj.optString("charUuid", "")
+                    if (s.isNotEmpty() && c.isNotEmpty()) {
+                        sUuid = UUID.fromString(s); cUuid = UUID.fromString(c)
+                    }; break
                 }
             }
-
             fun sendCmd(data: ByteArray) {
+                if (sUuid != null && cUuid != null) service.sendData(sUuid, cUuid, data)
+                else service.sendData(data)
                 val hex = data.joinToString("") { "%02X".format(it) }
-                if (sUuid != null && cUuid != null) {
-                    service.sendData(sUuid, cUuid, data)
-                } else {
-                    service.sendData(data)
-                }
-                // Add to history immediately for UI feedback
                 if (cmdHistory.firstOrNull() != hex) {
                     cmdHistory.add(0, hex)
                     if (cmdHistory.size > 20) cmdHistory.removeAt(cmdHistory.size - 1)
                 }
             }
-
-            // Only send throttle if changed significantly or periodically
-            // We use a small delay to avoid overwhelming the Bluetooth buffer
-            kotlinx.coroutines.delay(50) 
-            sendCmd(FlightCommands.setThrottle(throttle))
-
-            // Map right stick to Move (forward, right)
-            // rightOffset.y stays consistent with leftOffset.y: -1 (UP), 1 (DOWN)
-            // Most flight controllers expect Pitch: 1.0 = Forward, -1.0 = Backward.
-            // So if stick is UP (y = -1), we send 1.0. 
-            // We use -rightOffset.y to achieve this.
             kotlinx.coroutines.delay(50)
-            sendCmd(FlightCommands.move((-rightOffset.y).coerceIn(-1f, 1f), (rightOffset.x).coerceIn(-1f, 1f)))
+            sendCmd(FlightCommands.setThrottle(throttle))
+            kotlinx.coroutines.delay(50)
+            sendCmd(FlightCommands.move(
+                (-rightOffset.y).coerceIn(-1f, 1f),
+                rightOffset.x.coerceIn(-1f, 1f)
+            ))
         }
     }
 
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(Color(0xFF10141A)) // Dark background from HTML
-            .drawBehind {
-                // Subtle grid
-                val step = 40.dp.toPx()
-                val stroke = 1.dp.toPx()
-                val c = Color(0xFF7BDB80).copy(alpha = 0.03f)
-                var x = 0f
-                while (x < size.width) {
-                    drawLine(c, Offset(x, 0f), Offset(x, size.height), stroke)
-                    x += step
-                }
-                var y = 0f
-                while (y < size.height) {
-                    drawLine(c, Offset(0f, y), Offset(size.width, y), stroke)
-                    y += step
-                }
-            }
-    ) {
-        // 1. Top Bar
-        VehicleTopBar(
-            service, 
-            deviceName, 
-            deviceAddress, 
-            connectionState, 
-            remoteTelemetry,
-            onCommandSent = { hex ->
-                cmdHistory.add(0, hex)
-                if (cmdHistory.size > 20) cmdHistory.removeAt(cmdHistory.size - 1)
-            }
+    Box(modifier = Modifier.fillMaxSize().background(Color(0xFF0A0E14))) {
+
+        // 1. 全屏透明姿态 HUD
+        AttitudeHUD(
+            quaternion = remoteTelemetry.quaternion,
+            modifier = Modifier.fillMaxSize()
         )
 
-        // 2. HUD Elements (Left & Right)
-        VehicleHudOverlays(remoteTelemetry)
+        // 2. 顶栏
+        VehicleTopBar(service, deviceName, deviceAddress, connectionState, remoteTelemetry) {
+            cmdHistory.add(0, it)
+            if (cmdHistory.size > 20) cmdHistory.removeAt(cmdHistory.size - 1)
+        }
 
-        // 3. Central HUD Elements (Compass & Radar-like)
-        VehicleCentralHud(remoteTelemetry)
+        // 3. 右上角：罗盘 + 卫星 + 高度
+        Column(
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .padding(top = 52.dp, end = 12.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(2.dp)
+        ) {
+            HeadingRadar(
+                yaw = getYaw(remoteTelemetry.quaternion),
+                modifier = Modifier.size(64.dp)
+            )
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(3.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Default.SatelliteAlt,
+                    contentDescription = null,
+                    tint = Color(0xFF7BDB80),
+                    modifier = Modifier.size(10.dp)
+                )
+                Text(
+                    text = "${remoteTelemetry.satellites}",
+                    color = Color(0xFF7BDB80),
+                    fontSize = 9.sp,
+                    fontWeight = FontWeight.Bold,
+                    fontFamily = FontFamily.Monospace
+                )
+                Box(
+                    modifier = Modifier
+                        .width(1.dp)
+                        .height(10.dp)
+                        .background(Color.White.copy(alpha = 0.15f))
+                )
+                Text(
+                    text = String.format(Locale.US, "%.1fm", remoteTelemetry.altitude),
+                    color = Color(0xFF7BDB80),
+                    fontSize = 9.sp,
+                    fontWeight = FontWeight.Bold,
+                    fontFamily = FontFamily.Monospace
+                )
+            }
+        }
 
-        // 4. Main Controls (Joysticks)
-        Box(modifier = Modifier.fillMaxSize().padding(horizontal = 48.dp, vertical = 32.dp)) {
-            // Left Stick - Throttle (Y stays, X/Yaw springs back)
+        // 4. 摇杆
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(start = 16.dp, end = 16.dp, top = 100.dp, bottom = 80.dp)
+        ) {
             Joystick(
                 modifier = Modifier.align(Alignment.BottomStart),
-                initialOffset = leftOffset, // Pass initial offset
-                isSpringy = true,   // X axis (Yaw) -> Springs back
-                isSpringyY = false, // Y axis (Throttle) -> Stays put
+                initialOffset = leftOffset,
+                isSpringy = true,
+                isSpringyY = false,
                 onValueChange = { leftOffset = it }
             )
-            // Right Stick - Direction (Spring back on both)
             Joystick(
                 modifier = Modifier.align(Alignment.BottomEnd),
                 isSpringy = true,
@@ -281,38 +264,357 @@ fun VehicleScreen(service: BluetoothLeService?, deviceName: String?, deviceAddre
             )
         }
 
-        // 5. Center Button Grid
-        VehicleControlButtonGrid(
-            modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 40.dp),
+        // 5. 底部栏（按钮 + 遥测 + 历史 同一行）
+        VehicleBottomBar(
+            modifier = Modifier.align(Alignment.BottomCenter),
+            telemetry = remoteTelemetry,
             service = service,
             deviceAddress = deviceAddress,
-            onCommandSent = { hex -> 
-                cmdHistory.add(0, hex)
+            history = cmdHistory,
+            onCommandSent = {
+                cmdHistory.add(0, it)
                 if (cmdHistory.size > 20) cmdHistory.removeAt(cmdHistory.size - 1)
             }
-        )
-
-        // 6. Bottom Telemetry Bar
-        VehicleBottomBar(
-            modifier = Modifier.align(Alignment.BottomCenter), 
-            telemetry = remoteTelemetry, 
-            service = service,
-            history = cmdHistory
         )
     }
 }
 
+
+private fun getYaw(quaternion: FloatArray): Float {
+    val q = if (quaternion.size >= 4) quaternion else floatArrayOf(1f, 0f, 0f, 0f)
+    val yawRad = atan2(2f * (q[0] * q[3] + q[1] * q[2]),
+        1f - 2f * (q[2] * q[2] + q[3] * q[3]))
+    return ((yawRad * 180f / PI.toFloat()) % 360f + 360f) % 360f
+}
+
+@Composable
+fun AttitudeHUD(
+    quaternion: FloatArray,
+    modifier: Modifier = Modifier
+) {
+    val q = if (quaternion.size >= 4) quaternion else floatArrayOf(1f, 0f, 0f, 0f)
+    val w = q[0]; val x = q[1]; val y = q[2]; val z = q[3]
+
+    val rollRad  = atan2(2f * (w * x + y * z), 1f - 2f * (x * x + y * y))
+    val pitchRad = asin((2f * (w * y - z * x)).coerceIn(-1f, 1f))
+    val yawRad   = atan2(2f * (w * z + x * y), 1f - 2f * (y * y + z * z))
+
+    val targetRoll  = rollRad * 180f / PI.toFloat()
+    val targetPitch = pitchRad * 180f / PI.toFloat()
+    val yawDeg = ((yawRad * 180f / PI.toFloat()) % 360f + 360f) % 360f
+
+    val smoothRoll by animateFloatAsState(
+        targetValue = targetRoll,
+        animationSpec = spring(dampingRatio = 0.7f, stiffness = 150f)
+    )
+    val smoothPitch by animateFloatAsState(
+        targetValue = targetPitch,
+        animationSpec = spring(dampingRatio = 0.7f, stiffness = 150f)
+    )
+
+    val hudGreen = Color(0xFF00FF88)
+    val hudAmber = Color(0xFFFFB422)
+
+    Canvas(modifier = modifier) {
+        val cx = size.width / 2f
+        val cy = size.height / 2f
+        val r = minOf(cx, cy)
+        val ppd = r / 40f
+        val nc = drawContext.canvas.nativeCanvas
+
+        // 预创建 Paint 对象
+        val degreePaint = android.graphics.Paint().apply {
+            color = android.graphics.Color.parseColor("#00FF88")
+            textSize = 8.dp.toPx()
+            textAlign = android.graphics.Paint.Align.CENTER
+            isAntiAlias = true
+            alpha = 120
+            typeface = android.graphics.Typeface.create(
+                android.graphics.Typeface.MONOSPACE,
+                android.graphics.Typeface.NORMAL
+            )
+        }
+
+        val headingPaint = android.graphics.Paint().apply {
+            color = android.graphics.Color.parseColor("#00FF88")
+            textSize = 10.dp.toPx()
+            textAlign = android.graphics.Paint.Align.CENTER
+            isAntiAlias = true
+            alpha = 200
+            typeface = android.graphics.Typeface.create(
+                android.graphics.Typeface.MONOSPACE,
+                android.graphics.Typeface.BOLD
+            )
+        }
+
+        val infoPaint = android.graphics.Paint().apply {
+            color = android.graphics.Color.parseColor("#00FF88")
+            textSize = 7.dp.toPx()
+            textAlign = android.graphics.Paint.Align.CENTER
+            isAntiAlias = true
+            alpha = 140
+            typeface = android.graphics.Typeface.create(
+                android.graphics.Typeface.MONOSPACE,
+                android.graphics.Typeface.NORMAL
+            )
+        }
+
+        // ═══════════════════════════════════════════════════
+        // 第1层：旋转的天空/地面
+        // ═══════════════════════════════════════════════════
+        rotate(-smoothRoll, Offset(cx, cy)) {
+            val horizonY = cy + smoothPitch * ppd
+
+            // 天空
+            drawRect(
+                color = Color(0xFF1A3A5C).copy(alpha = 0.12f),
+                topLeft = Offset.Zero,
+                size = Size(size.width, horizonY.coerceIn(0f, size.height))
+            )
+
+            // 地面
+            drawRect(
+                color = Color(0xFF5D4037).copy(alpha = 0.10f),
+                topLeft = Offset(0f, horizonY),
+                size = Size(size.width, (size.height - horizonY).coerceAtLeast(0f))
+            )
+
+            // 俯仰阶梯线
+            for (deg in -40..40 step 10) {
+                if (deg == 0) continue
+                val lineY = horizonY - deg * ppd
+                if (lineY < -r || lineY > size.height + r) continue
+
+                val isMajor = deg % 20 == 0
+                val alpha = if (isMajor) 0.25f else 0.12f
+                val sw = if (isMajor) 1.2f else 0.6f
+                val halfW = if (isMajor) r * 0.30f else r * 0.18f
+                val gap = r * 0.10f
+
+                drawLine(hudGreen.copy(alpha = alpha),
+                    Offset(cx - halfW, lineY), Offset(cx - gap, lineY), sw.dp.toPx())
+                drawLine(hudGreen.copy(alpha = alpha),
+                    Offset(cx + gap, lineY), Offset(cx + halfW, lineY), sw.dp.toPx())
+
+                if (isMajor) {
+                    nc.drawText(
+                        "${abs(deg)}°",
+                        cx - halfW - 12.dp.toPx(),
+                        lineY + 3.dp.toPx(),
+                        degreePaint
+                    )
+                }
+            }
+
+            // 地平线
+            drawLine(hudGreen, Offset(cx - r * 1.5f, horizonY),
+                Offset(cx + r * 1.5f, horizonY), 1.5.dp.toPx())
+
+            // 地面透视网格线
+            for (i in -6..6) {
+                val gx = cx + i * (r * 0.12f)
+                drawLine(
+                    hudGreen.copy(alpha = 0.08f),
+                    Offset(cx + i * r * 0.02f, horizonY),
+                    Offset(gx, size.height),
+                    0.5.dp.toPx()
+                )
+            }
+
+            // 横滚弧形刻度
+            val arcR = r * 0.92f
+            for (deg in -60..60 step 5) {
+                val angleRad = Math.toRadians((deg - 90).toDouble()).toFloat()
+                val isMajor = deg % 30 == 0
+                val isMid = deg % 10 == 0
+                val tickLen = when {
+                    isMajor -> 10.dp.toPx()
+                    isMid   -> 6.dp.toPx()
+                    else    -> 3.dp.toPx()
+                }
+                val a = when {
+                    isMajor -> 0.8f
+                    isMid   -> 0.4f
+                    else    -> 0.2f
+                }
+
+                drawLine(
+                    hudGreen.copy(alpha = a),
+                    Offset(cx + (arcR - tickLen) * cos(angleRad), cy + (arcR - tickLen) * sin(angleRad)),
+                    Offset(cx + arcR * cos(angleRad), cy + arcR * sin(angleRad)),
+                    (if (isMajor) 1.5f else 0.8f).dp.toPx()
+                )
+            }
+        }
+
+        // ═══════════════════════════════════════════════════
+        // 第2层：固定飞机参考符号
+        // ═══════════════════════════════════════════════════
+        val wingLen = r * 0.22f
+        val wingGap = r * 0.06f
+
+        drawLine(hudAmber, Offset(cx - wingGap, cy), Offset(cx - wingLen, cy), 2.dp.toPx())
+        drawLine(hudAmber, Offset(cx - wingLen, cy), Offset(cx - wingLen, cy - 3.dp.toPx()), 2.dp.toPx())
+        drawLine(hudAmber, Offset(cx + wingGap, cy), Offset(cx + wingLen, cy), 2.dp.toPx())
+        drawLine(hudAmber, Offset(cx + wingLen, cy), Offset(cx + wingLen, cy - 3.dp.toPx()), 2.dp.toPx())
+        drawCircle(hudAmber, 2.5.dp.toPx(), Offset(cx, cy))
+
+        // ═══════════════════════════════════════════════════
+        // 第3层：固定横滚指针
+        // ═══════════════════════════════════════════════════
+        val triR = r * 0.92f
+        val triY = cy - triR + 2.dp.toPx()
+        drawPath(
+            Path().apply {
+                moveTo(cx, triY)
+                lineTo(cx - 4.dp.toPx(), triY + 7.dp.toPx())
+                lineTo(cx + 4.dp.toPx(), triY + 7.dp.toPx())
+                close()
+            },
+            hudAmber
+        )
+
+        // ═══════════════════════════════════════════════════
+        // 第4层：信息文字（直接用 nc.drawText）
+        // ═══════════════════════════════════════════════════
+        nc.drawText(
+            String.format(Locale.US, "%03d°", yawDeg.toInt()),
+            cx, cy + r * 0.55f, headingPaint
+        )
+        nc.drawText(
+            String.format(Locale.US, "R:%+.0f°  P:%+.0f°", smoothRoll, smoothPitch),
+            cx, cy + r * 0.55f + 12.dp.toPx(), infoPaint
+        )
+    }
+}
+
+
+@Composable
+fun HeadingRadar(
+    yaw: Float,
+    modifier: Modifier = Modifier
+) {
+    val smoothYaw by animateFloatAsState(
+        targetValue = yaw,
+        animationSpec = spring(dampingRatio = 0.7f, stiffness = 100f)
+    )
+
+    Box(
+        modifier = modifier
+            .clip(CircleShape)
+            .background(Color(0xFF0D1117))
+            .border(1.5.dp, Color.White.copy(alpha = 0.15f), CircleShape)
+    ) {
+        Canvas(modifier = Modifier.fillMaxSize()) {
+            val cx = size.width / 2f
+            val cy = size.height / 2f
+            val r = minOf(cx, cy)
+
+            // 同心圆
+            for (i in 1..3) {
+                drawCircle(
+                    Color(0xFF7BDB80).copy(alpha = 0.1f),
+                    r * i / 3f,
+                    center = Offset(cx, cy),
+                    style = Stroke(0.5.dp.toPx())
+                )
+            }
+
+            // 十字线
+            val crossAlpha = 0.15f
+            drawLine(Color(0xFF7BDB80).copy(alpha = crossAlpha),
+                Offset(cx, cy - r), Offset(cx, cy + r), 0.5.dp.toPx())
+            drawLine(Color(0xFF7BDB80).copy(alpha = crossAlpha),
+                Offset(cx - r, cy), Offset(cx + r, cy), 0.5.dp.toPx())
+
+            // 航向刻度盘（旋转）
+            rotate(-smoothYaw, Offset(cx, cy)) {
+                val cardinalDirs = mapOf(
+                    0f to "N", 90f to "E", 180f to "S", 270f to "W"
+                )
+                val tickPaint = android.graphics.Paint().apply {
+                    color = android.graphics.Color.parseColor("#7BDB80")
+                    textSize = 7.dp.toPx()
+                    textAlign = android.graphics.Paint.Align.CENTER
+                    isAntiAlias = true
+                    typeface = android.graphics.Typeface.MONOSPACE
+                }
+
+                for (deg in 0..359 step 10) {
+                    val angleRad = Math.toRadians((deg - 90).toDouble()).toFloat()
+                    val isCardinal = deg % 90 == 0
+                    val tickLen = if (isCardinal) 8.dp.toPx() else 4.dp.toPx()
+                    val alpha = if (isCardinal) 0.9f else 0.3f
+
+                    val outerX = cx + r * cos(angleRad)
+                    val outerY = cy + r * sin(angleRad)
+                    val innerX = cx + (r - tickLen) * cos(angleRad)
+                    val innerY = cy + (r - tickLen) * sin(angleRad)
+
+                    drawLine(
+                        Color(0xFF7BDB80).copy(alpha = alpha),
+                        Offset(innerX, innerY),
+                        Offset(outerX, outerY),
+                        strokeWidth = (if (isCardinal) 1.5f else 0.8f).dp.toPx()
+                    )
+
+                    // 标注 N/S/E/W
+                    if (isCardinal) {
+                        val label = cardinalDirs[deg.toFloat()] ?: ""
+                        val labelR = r - tickLen - 8.dp.toPx()
+                        drawContext.canvas.nativeCanvas.drawText(
+                            label,
+                            cx + labelR * cos(angleRad),
+                            cy + labelR * sin(angleRad) + 3.dp.toPx(),
+                            tickPaint
+                        )
+                    }
+                }
+            }
+
+            // 固定三角指针（顶部）
+            val triY = cy - r + 4.dp.toPx()
+            drawPath(
+                Path().apply {
+                    moveTo(cx, triY)
+                    lineTo(cx - 4.dp.toPx(), triY + 6.dp.toPx())
+                    lineTo(cx + 4.dp.toPx(), triY + 6.dp.toPx())
+                    close()
+                },
+                Color(0xFFFFB422)
+            )
+
+            // 航向数字
+            drawContext.canvas.nativeCanvas.apply {
+                val numPaint = android.graphics.Paint().apply {
+                    color = android.graphics.Color.WHITE
+                    textSize = 10.dp.toPx()
+                    textAlign = android.graphics.Paint.Align.CENTER
+                    isAntiAlias = true
+                    typeface = android.graphics.Typeface.MONOSPACE
+                }
+                drawText(
+                    String.format(Locale.US, "%03d°", smoothYaw.toInt()),
+                    cx, cy + 4.dp.toPx(), numPaint
+                )
+            }
+        }
+    }
+}
+
+
+
 @Composable
 fun VehicleTopBar(
-    service: BluetoothLeService?, 
-    deviceName: String?, 
-    deviceAddress: String?, 
+    service: BluetoothLeService?,
+    deviceName: String?,
+    deviceAddress: String?,
     connectionState: Int,
     telemetry: FlightCommands.Telemetry,
-    onCommandSent: (String) -> Unit = {} // Added callback
+    onCommandSent: (String) -> Unit = {}
 ) {
     var modeExpanded by remember { mutableStateOf(false) }
-    var currentMode by remember { mutableStateOf("DIRECT") } // Set default to DIRECT as requested
+    var currentMode by remember { mutableStateOf("DIRECT") }
     val modes = listOf(
         "DIRECT" to FlightCommands.CONTROL_MODE_DIRECT,
         "STABILIZED" to FlightCommands.CONTROL_MODE_STABILIZED,
@@ -323,6 +625,13 @@ fun VehicleTopBar(
 
     val isConnected = connectionState == BluetoothLeService.STATE_CONNECTED
 
+    // 电量颜色
+    val batteryColor = when {
+        telemetry.battery < 20 -> Color.Red
+        telemetry.battery < 50 -> Color(0xFFFFCC00)
+        else -> Color(0xFF7BDB80)
+    }
+
     Box(
         modifier = Modifier
             .fillMaxWidth()
@@ -330,22 +639,50 @@ fun VehicleTopBar(
             .background(Color(0xFF10141A).copy(alpha = 0.6f))
             .padding(horizontal = 24.dp)
     ) {
+        // ── 左侧：电量图标 + 设备名 + 模式切换 ──
         Row(
             modifier = Modifier.align(Alignment.CenterStart),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            // 电量图标 + 设备名
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                // 电量图标（替换原来的 FlightTakeoff）
                 Icon(
-                    imageVector = Icons.Default.FlightTakeoff,
-                    contentDescription = null,
-                    tint = if (isConnected) Color(0xFF7BDB80) else Color(0xFFFFB4AB),
-                    modifier = Modifier.size(24.dp)
+                    imageVector = when {
+                        telemetry.battery < 20 -> Icons.Default.BatteryAlert
+                        telemetry.battery < 50 -> Icons.Default.BatteryStd
+                        else -> Icons.Default.BatteryFull
+                    },
+                    contentDescription = "Battery",
+                    tint = batteryColor,
+                    modifier = Modifier.size(20.dp)
                 )
+                // 电量百分比
+                Text(
+                    text = "${telemetry.battery}%",
+                    color = batteryColor,
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Bold,
+                    fontFamily = FontFamily.Monospace
+                )
+
+                // 分隔线
+                Box(
+                    modifier = Modifier
+                        .width(1.dp)
+                        .height(16.dp)
+                        .background(Color.White.copy(alpha = 0.15f))
+                )
+
+                // 设备名
                 Text(
                     text = deviceName ?: "Unknown Device",
                     color = if (isConnected) Color(0xFF7BDB80) else Color(0xFFFFB4AB),
-                    fontSize = 14.sp,
+                    fontSize = 13.sp,
                     fontWeight = FontWeight.Bold,
                     fontFamily = FontFamily.Monospace,
                     maxLines = 1,
@@ -353,9 +690,8 @@ fun VehicleTopBar(
                 )
             }
 
-            // Connection dependent UI
+            // 连接状态：模式切换
             if (isConnected) {
-                // Mode Switcher
                 Box {
                     Surface(
                         onClick = { modeExpanded = true },
@@ -390,42 +726,34 @@ fun VehicleTopBar(
                     ) {
                         modes.forEach { (modeLabel, modeValue) ->
                             DropdownMenuItem(
-                                text = { 
+                                text = {
                                     Text(
-                                        modeLabel, 
+                                        modeLabel,
                                         color = if (modeLabel == currentMode) Color(0xFF7BDB80) else Color.White,
                                         fontFamily = FontFamily.Monospace,
                                         fontSize = 13.sp
-                                    ) 
+                                    )
                                 },
                                 onClick = {
                                     currentMode = modeLabel
                                     modeExpanded = false
-                                    
                                     val prefs = service?.getSharedPreferences("afirefly_prefs", Context.MODE_PRIVATE)
                                     val savedJson = prefs?.getString("saved_devices", "[]") ?: "[]"
                                     val devicesArr = try { JSONArray(savedJson) } catch (e: Exception) { JSONArray() }
-                                    var sUuid: UUID? = null
-                                    var cUuid: UUID? = null
+                                    var sUuid: UUID? = null; var cUuid: UUID? = null
                                     for (i in 0 until devicesArr.length()) {
                                         val obj = devicesArr.getJSONObject(i)
                                         if (obj.getString("uid") == deviceAddress) {
                                             val sStr = obj.optString("serviceUuid", "")
                                             val cStr = obj.optString("charUuid", "")
                                             if (sStr.isNotEmpty() && cStr.isNotEmpty()) {
-                                                sUuid = UUID.fromString(sStr)
-                                                cUuid = UUID.fromString(cStr)
-                                            }
-                                            break
+                                                sUuid = UUID.fromString(sStr); cUuid = UUID.fromString(cStr)
+                                            }; break
                                         }
                                     }
                                     val data = FlightCommands.setMode(modeValue)
-                                    if (sUuid != null && cUuid != null) {
-                                        service?.sendData(sUuid, cUuid, data)
-                                    } else {
-                                        service?.sendData(data)
-                                    }
-                                    // ADDED: Force update history
+                                    if (sUuid != null && cUuid != null) service?.sendData(sUuid, cUuid, data)
+                                    else service?.sendData(data)
                                     onCommandSent(data.joinToString("") { "%02X".format(it) })
                                 }
                             )
@@ -433,11 +761,10 @@ fun VehicleTopBar(
                     }
                 }
             } else {
-                // Reconnect Button
                 val isConnecting = connectionState == BluetoothLeService.STATE_CONNECTING
                 Box(
                     modifier = Modifier
-                        .size(32.dp) // Container size to ensure enough touch area
+                        .size(32.dp)
                         .clickable(enabled = !isConnecting) {
                             deviceAddress?.let { service?.connect(it) }
                         },
@@ -445,7 +772,7 @@ fun VehicleTopBar(
                 ) {
                     Box(
                         modifier = Modifier
-                            .size(24.dp) // Actual visible background circle
+                            .size(24.dp)
                             .background(Color(0xFFFFB4AB).copy(alpha = 0.1f), CircleShape)
                             .border(1.dp, Color(0xFFFFB4AB).copy(alpha = 0.4f), CircleShape),
                         contentAlignment = Alignment.Center
@@ -454,12 +781,12 @@ fun VehicleTopBar(
                             imageVector = Icons.Default.BluetoothConnected,
                             contentDescription = "Reconnect",
                             tint = Color(0xFFFFB4AB),
-                            modifier = Modifier.size(16.dp) // Even smaller icon
+                            modifier = Modifier.size(16.dp)
                         )
                     }
                     if (isConnecting) {
                         CircularProgressIndicator(
-                            modifier = Modifier.size(28.dp), // Slightly larger than the circle
+                            modifier = Modifier.size(28.dp),
                             color = Color(0xFFFFB4AB),
                             strokeWidth = 1.dp
                         )
@@ -468,41 +795,19 @@ fun VehicleTopBar(
             }
         }
 
-        // Middle Telemetry - Absolute center
+        // ── 右侧：PID + 摄像头 + 设置 ──
         Row(
-            modifier = Modifier
-                .align(Alignment.Center)
-                .background(Color(0xFF181C22), RoundedCornerShape(20.dp))
-                .border(1.dp, Color.White.copy(alpha = 0.1f), RoundedCornerShape(20.dp))
-                .padding(horizontal = 16.dp, vertical = 4.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(16.dp)
-        ) {
-            HudStatusItem(Icons.Default.BatteryFull, "${telemetry.battery}%", if (telemetry.battery < 20) Color.Red else Color(0xFF7BDB80))
-            HudStatusItem(Icons.Default.SignalCellularAlt, "${telemetry.rssi}dBm", Color(0xFF7BDB80))
-            HudStatusItem(Icons.Default.SatelliteAlt, "${telemetry.satellites}", Color(0xFF7BDB80))
-        }
-
-        // PID Charts - Between Center and Right Buttons
-        Row(
-            modifier = Modifier
-                .align(Alignment.CenterEnd)
-                .padding(end = 100.dp), // Space for the 2 buttons on the right
+            modifier = Modifier.align(Alignment.CenterEnd),
             horizontalArrangement = Arrangement.spacedBy(12.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             PidMiniChart("RATE PID", telemetry, Color(0xFF7BDB80))
-        }
-
-        Row(
-            modifier = Modifier.align(Alignment.CenterEnd),
-            horizontalArrangement = Arrangement.spacedBy(12.dp)
-        ) {
             HudIconButton(Icons.Default.Videocam)
             HudIconButton(Icons.Default.Settings)
         }
     }
 }
+
 
 @Composable
 fun HudStatusItem(icon: ImageVector, text: String, tint: Color) {
@@ -614,18 +919,19 @@ fun VehicleHudOverlays(telemetry: FlightCommands.Telemetry) {
 @Composable
 fun VehicleCentralHud(telemetry: FlightCommands.Telemetry) {
     Box(modifier = Modifier.fillMaxSize().padding(top = 24.dp, bottom = 40.dp)) {
-        // Left Attitude HUD (3D perspective)
+
+        // 左侧：姿态指示器（人工地平仪）
         Box(
             modifier = Modifier
                 .align(Alignment.TopStart)
                 .padding(32.dp)
-                .size(128.dp),
+                .size(160.dp),
             contentAlignment = Alignment.Center
         ) {
-            Attitude3D(telemetry.quaternion)
+            AttitudeIndicator(telemetry.quaternion)
         }
 
-        // Right Radar-like
+        // 右侧：雷达
         Box(
             modifier = Modifier
                 .align(Alignment.TopEnd)
@@ -635,13 +941,21 @@ fun VehicleCentralHud(telemetry: FlightCommands.Telemetry) {
                 .border(2.dp, Color.White.copy(alpha = 0.1f), CircleShape)
                 .clip(CircleShape)
         ) {
-            // Radar scan animation
             val transition = rememberInfiniteTransition()
-            val angle by transition.animateFloat(0f, 360f, infiniteRepeatable(tween(4000, easing = LinearEasing)))
-            
+            val angle by transition.animateFloat(
+                0f, 360f,
+                infiniteRepeatable(tween(4000, easing = LinearEasing))
+            )
+
             Canvas(modifier = Modifier.fillMaxSize()) {
                 rotate(angle) {
-                    val brush = androidx.compose.ui.graphics.Brush.sweepGradient(listOf(Color.Transparent, Color(0xFF7BDB80).copy(alpha = 0.5f), Color.Transparent))
+                    val brush = Brush.sweepGradient(
+                        listOf(
+                            Color.Transparent,
+                            Color(0xFF7BDB80).copy(alpha = 0.5f),
+                            Color.Transparent
+                        )
+                    )
                     drawCircle(brush)
                 }
                 drawCircle(Color(0xFF7BDB80), 3.dp.toPx())
@@ -650,246 +964,216 @@ fun VehicleCentralHud(telemetry: FlightCommands.Telemetry) {
     }
 }
 
+
 @Composable
-fun Attitude3D(quat: FloatArray) {
-    // Safety check for quat size
-    val finalQuat = if (quat.size == 4) quat else floatArrayOf(1f, 0f, 0f, 0f)
-    
-    // 1. Standard Quaternion to Euler conversion
-    val w = finalQuat[0]; val x = finalQuat[1]; val y = finalQuat[2]; val z = finalQuat[3]
-    val roll  = atan2(2f * (w * x + y * z), 1f - 2f * (x * x + y * y)) * (180f / PI.toFloat())
-    val pitch = asin((2f * (w * y - z * x)).coerceIn(-1f, 1f)) * (180f / PI.toFloat())
-    val yaw   = atan2(2f * (w * z + x * y), 1f - 2f * (y * y + z * z)) * (180f / PI.toFloat())
+fun AttitudeIndicator(
+    quaternion: FloatArray,
+    modifier: Modifier = Modifier
+) {
+    val q = if (quaternion.size >= 4) quaternion else floatArrayOf(1f, 0f, 0f, 0f)
+    val w = q[0]; val x = q[1]; val y = q[2]; val z = q[3]
+
+    // ── 四元数 → 欧拉角（航空航天约定：FRD 机体 / NED 世界）──
+    // Roll  (φ): 绕机体 X 轴（机头方向），正 = 右倾
+    // Pitch (θ): 绕机体 Y 轴（右方向），正 = 抬头
+    // Yaw   (ψ): 绕机体 Z 轴（下方向），正 = 右转
+    val rollRad  = atan2(2f * (w * x + y * z), 1f - 2f * (x * x + y * y))
+    val pitchRad = asin((2f * (w * y - z * x)).coerceIn(-1f, 1f))
+    val yawRad   = atan2(2f * (w * z + x * y), 1f - 2f * (y * y + z * z))
+
+    val targetRoll  = rollRad * 180f / PI.toFloat()
+    val targetPitch = pitchRad * 180f / PI.toFloat()
+    val yawDeg = ((yawRad * 180f / PI.toFloat()) % 360f + 360f) % 360f
+
+    // ── 弹簧动画平滑抖动 ──
+    val smoothRoll by animateFloatAsState(
+        targetValue = targetRoll,
+        animationSpec = spring(dampingRatio = 0.7f, stiffness = 150f)
+    )
+    val smoothPitch by animateFloatAsState(
+        targetValue = targetPitch,
+        animationSpec = spring(dampingRatio = 0.7f, stiffness = 150f)
+    )
 
     Box(
-        modifier = Modifier.size(140.dp),
-        contentAlignment = Alignment.Center
+        modifier = modifier
+            .clip(CircleShape)
+            .background(Color(0xFF0D1117))
+            .border(2.dp, Color.White.copy(alpha = 0.15f), CircleShape)
     ) {
-        // --- 3D PERSPECTIVE CONTAINER ---
-        // This container defines the 60-degree tilted "world" space.
-        // Everything inside follows this perspective.
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .graphicsLayer {
-                    rotationX = 60f // Apply the global tilt once for the entire 3D scene
-                    cameraDistance = 12 * density
-                },
-            contentAlignment = Alignment.Center
-        ) {
-            // 1. World Reference Grid (Static Ground Plane)
-            // This is "flat" in the local 3D space, which after the parent's 60deg tilt 
-            // becomes a horizontal floor.
-            Canvas(modifier = Modifier.fillMaxSize()) {
-                val center = Offset(size.width / 2, size.height / 2)
-                val gridLen = size.width * 0.45f
-                val gridColor = Color.White.copy(alpha = 0.1f)
-                
-                // Draw a cross representing the world Ground Plane (X and Y)
-                // Since XY is the base, and Y is usually "into" the screen in 2D...
-                // World Forward (Z) - we keep it for reference although it's "Up" in math sometimes
-                // but for HUD, let's draw the floor grid:
-                drawLine(Color.White.copy(alpha = 0.15f), center.copy(y = center.y - gridLen), center.copy(y = center.y + gridLen), 1.dp.toPx())
-                drawLine(Color.White.copy(alpha = 0.15f), center.copy(x = center.x - gridLen), center.copy(x = center.x + gridLen), 1.dp.toPx())
-                
-                // Subtle boundary circle on the floor
-                drawCircle(gridColor, gridLen, center, style = Stroke(0.5.dp.toPx()))
+        Canvas(modifier = Modifier.fillMaxSize()) {
+            val cx = size.width / 2f
+            val cy = size.height / 2f
+            val r = minOf(cx, cy)
+            val ppd = r / 45f // 每度对应像素数（45°填满半径）
+
+            // ═══════════════════════════════════════════════════════
+            // 第1层：旋转的世界坐标系
+            //   画布旋转 -roll，天空/地面反向倾斜
+            // ═══════════════════════════════════════════════════════
+            rotate(-smoothRoll, Offset(cx, cy)) {
+                // 地平线 Y 位置：pitch 正 → 抬头 → 地平线下移 → 天空区域增大
+                val horizonY = cy + smoothPitch * ppd
+
+                // 天空（地平线以上）
+                drawRect(
+                    color = Color(0xFF1565C0),
+                    topLeft = Offset.Zero,
+                    size = Size(size.width, horizonY.coerceIn(0f, size.height))
+                )
+
+                // 地面（地平线以下）
+                drawRect(
+                    color = Color(0xFF5D4037),
+                    topLeft = Offset(0f, horizonY),
+                    size = Size(size.width, (size.height - horizonY).coerceAtLeast(0f))
+                )
+
+                // 地平线
+                drawLine(
+                    color = Color.White,
+                    start = Offset(cx - r * 1.2f, horizonY),
+                    end = Offset(cx + r * 1.2f, horizonY),
+                    strokeWidth = 1.5.dp.toPx()
+                )
+
+                // ── 俯仰阶梯线 ──
+                for (deg in -40..40 step 10) {
+                    if (deg == 0) continue
+                    val lineY = horizonY - deg * ppd
+                    if (lineY < -r * 1.5f || lineY > size.height + r * 1.5f) continue
+
+                    val isMajor = deg % 20 == 0
+                    val halfW = if (isMajor) r * 0.35f else r * 0.2f
+                    val gap   = if (isMajor) 0f else r * 0.12f
+                    var alpha = if (isMajor) 0.6f else 0.35f
+                    val sw    = if (isMajor) 1.5f else 1f
+
+                    // 左侧线段
+                    drawLine(
+                        Color.White.copy(alpha = alpha),
+                        Offset(cx - halfW, lineY),
+                        Offset(cx - gap, lineY),
+                        strokeWidth = sw.dp.toPx()
+                    )
+                    // 右侧线段
+                    drawLine(
+                        Color.White.copy(alpha = alpha),
+                        Offset(cx + gap, lineY),
+                        Offset(cx + halfW, lineY),
+                        strokeWidth = sw.dp.toPx()
+                    )
+
+                    // 度数标签
+                    if (isMajor) {
+                        drawContext.canvas.nativeCanvas.apply {
+                            val paint = android.graphics.Paint().apply {
+                                color = android.graphics.Color.WHITE
+                                textSize = 7.dp.toPx()
+                                textAlign = android.graphics.Paint.Align.CENTER
+                                isAntiAlias = true
+                                alpha = 160F
+                            }
+                            drawText(
+                                "${abs(deg)}",
+                                cx - halfW - 10.dp.toPx(),
+                                lineY + 3.dp.toPx(),
+                                paint
+                            )
+                        }
+                    }
+                }
+
+                // ── 横滚弧形刻度（随世界旋转）──
+                val arcR = r * 0.88f
+                for (deg in -60..60 step 10) {
+                    val angleRad = Math.toRadians((deg - 90).toDouble()).toFloat()
+                    val isMajor = deg % 30 == 0
+                    val tickLen = if (isMajor) 10.dp.toPx() else 5.dp.toPx()
+                    val alpha   = if (isMajor) 0.8f else 0.4f
+
+                    val outerX = cx + arcR * cos(angleRad)
+                    val outerY = cy + arcR * sin(angleRad)
+                    val innerX = cx + (arcR - tickLen) * cos(angleRad)
+                    val innerY = cy + (arcR - tickLen) * sin(angleRad)
+
+                    drawLine(
+                        Color.White.copy(alpha = alpha),
+                        Offset(innerX, innerY),
+                        Offset(outerX, outerY),
+                        strokeWidth = (if (isMajor) 1.5f else 1f).dp.toPx()
+                    )
+                }
             }
 
-            // 2. Dynamic Flying Object (Drone + Local Axis)
-            // This Box inherits the 60deg tilt and adds its own physical rotation.
-            Box(
-                modifier = Modifier
-                    .size(100.dp)
-                    .graphicsLayer {
-                        // Order of application is important in Compose (Z -> Y -> X)
-                        // Note: Compose rotationZ is around the axis pointing out of screen.
-                        // We apply drone's attitude relative to the "flat" ground plane.
-                        rotationX = -pitch
-                        rotationY = roll
-                        rotationZ = -yaw
-                    },
-                contentAlignment = Alignment.Center
-            ) {
-                // Local Coordinate Axes (Z for Forward/Red, X for Right/Green, Y for Up/Blue)
-                // Following user's "XY plane is base, Z is forward"
-                Canvas(modifier = Modifier.fillMaxSize()) {
-                    val center = Offset(size.width / 2, size.height / 2)
-                    val axisLen = size.width * 0.45f
-                    
-                    // User requested: XY is ground, Z is Forward.
-                    // In our 2D-to-3D projection (before 60deg tilt):
-                    // Screen's vertical axis points "forward".
-                    
-                    // Drone local Forward-axis (Z - Red)
-                    // This points "Forward" relative to the drone body.
-                    drawLine(
-                        color = Color(0xFFFF5252),
-                        start = center,
-                        end = Offset(center.x, center.y - axisLen),
-                        strokeWidth = 2.dp.toPx()
-                    )
-                    // Drone local Right-axis (X - Green)
-                    // This points "Right" relative to the drone body.
-                    drawLine(
-                        color = Color(0xFF7BDB80),
-                        start = center,
-                        end = Offset(center.x + axisLen, center.y),
-                        strokeWidth = 2.dp.toPx()
-                    )
-                    
-                    // Drone local Up-axis (Y - Blue)
-                    // This points "Up" perpendicular to the XY plane.
-                    // Since the current box is rotated, drawing a vertical line on the canvas 
-                    // will correctly represent the local Y axis in 3D.
-                    drawLine(
-                        color = Color(0xFF42A5F5),
-                        start = center,
-                        end = Offset(center.y, center.y), // Placeholder logic check
-                        strokeWidth = 2.dp.toPx()
-                    )
-                    // Better representation for local Y (Up): a short line along the screen-rotated Z axis
-                    // But for a simple HUD, a dot or a vector is sufficient. 
-                    // Let's use a 3D vector for Y:
-                    drawCircle(Color(0xFF42A5F5), 3.dp.toPx(), center)
+            // ═══════════════════════════════════════════════════════
+            // 第2层：固定飞机参考符号（不随世界旋转）
+            // ═══════════════════════════════════════════════════════
+            val wingLen = r * 0.28f
+            val wingGap = r * 0.08f
+            val wingColor = Color(0xFFFFB422)
+
+            // 左翼
+            drawLine(wingColor, Offset(cx - wingGap, cy), Offset(cx - wingLen, cy), 2.dp.toPx())
+            drawLine(wingColor, Offset(cx - wingLen, cy), Offset(cx - wingLen, cy - 4.dp.toPx()), 2.dp.toPx())
+            // 右翼
+            drawLine(wingColor, Offset(cx + wingGap, cy), Offset(cx + wingLen, cy), 2.dp.toPx())
+            drawLine(wingColor, Offset(cx + wingLen, cy), Offset(cx + wingLen, cy - 4.dp.toPx()), 2.dp.toPx())
+            // 中心点
+            drawCircle(wingColor, 3.dp.toPx(), Offset(cx, cy))
+
+            // ═══════════════════════════════════════════════════════
+            // 第3层：固定横滚指针（顶部三角）
+            // ═══════════════════════════════════════════════════════
+            val arcR2 = r * 0.88f
+            val pointerBaseY = cy - arcR2 + 8.dp.toPx()
+            val triHalf = 5.dp.toPx()
+            drawPath(
+                Path().apply {
+                    moveTo(cx, pointerBaseY)
+                    lineTo(cx - triHalf, pointerBaseY + triHalf * 1.5f)
+                    lineTo(cx + triHalf, pointerBaseY + triHalf * 1.5f)
+                    close()
+                },
+                wingColor
+            )
+
+            // ═══════════════════════════════════════════════════════
+            // 第4层：航向显示（底部）
+            // ═══════════════════════════════════════════════════════
+            drawContext.canvas.nativeCanvas.apply {
+                // 航向数字
+                val headingPaint = android.graphics.Paint().apply {
+                    color = android.graphics.Color.WHITE
+                    textSize = 9.dp.toPx()
+                    textAlign = android.graphics.Paint.Align.CENTER
+                    isAntiAlias = true
+                    typeface = android.graphics.Typeface.MONOSPACE
+                    alpha = 200
                 }
+                drawText(
+                    String.format(Locale.US, "%03d°", yawDeg.toInt()),
+                    cx, size.height - 8.dp.toPx(), headingPaint
+                )
 
-                // The Drone 3D Model
-                Canvas(modifier = Modifier.size(60.dp)) {
-                    val center = Offset(size.width / 2, size.height / 2)
-                    val armLen = size.width * 0.35f
-                    val motorRadius = 6.dp.toPx()
-                    val bodyWidth = 12.dp.toPx()
-                    val bodyHeight = 20.dp.toPx()
-                    
-                    val accentColor = Color(0xFF7BDB80) // Drone green
-                    val frameColor = Color.White.copy(alpha = 0.8f)
-                    val bodyColor = Color(0xFF25292E)
-                    val bottomSurfaceColor = Color(0xFF15191E)
-                    val highlightColor = Color.White.copy(alpha = 0.3f)
-
-                    // Draw a shadow/depth for the body to make it look "thick"
-                    // This draws a darker version slightly offset to represent the sides/bottom
-                    drawRoundRect(
-                        color = bottomSurfaceColor,
-                        topLeft = Offset(center.x - bodyWidth / 2, center.y - bodyHeight / 2 + 4.dp.toPx()),
-                        size = Size(bodyWidth, bodyHeight),
-                        cornerRadius = CornerRadius(4.dp.toPx())
-                    )
-
-                    // 1. Draw central body (Battery/Flight Controller area)
-                    // Main body block (The Top Surface)
-                    drawRoundRect(
-                        color = bodyColor,
-                        topLeft = Offset(center.x - bodyWidth / 2, center.y - bodyHeight / 2),
-                        size = Size(bodyWidth, bodyHeight),
-                        cornerRadius = CornerRadius(4.dp.toPx())
-                    )
-                    
-                    // Add a "top bulge" or protrusion (Gps/Sensor housing) with even more height
-                    val protrusionWidth = bodyWidth * 0.7f
-                    val protrusionHeight = bodyHeight * 0.4f
-                    // Protrusion Side/Shadow
-                    drawRoundRect(
-                        color = Color.Black.copy(alpha = 0.5f),
-                        topLeft = Offset(center.x - protrusionWidth / 2, center.y - protrusionHeight / 2 + 2.dp.toPx()),
-                        size = Size(protrusionWidth, protrusionHeight),
-                        cornerRadius = CornerRadius(3.dp.toPx())
-                    )
-                    // Protrusion Top
-                    drawRoundRect(
-                        color = Color(0xFF45494E),
-                        topLeft = Offset(center.x - protrusionWidth / 2, center.y - protrusionHeight / 2),
-                        size = Size(protrusionWidth, protrusionHeight),
-                        cornerRadius = CornerRadius(3.dp.toPx())
-                    )
-                    
-                    // Highlight on the protrusion to show light hitting the "top"
-                    drawRoundRect(
-                        color = highlightColor,
-                        topLeft = Offset(center.x - protrusionWidth / 2 + 1.dp.toPx(), center.y - protrusionHeight / 2 + 1.dp.toPx()),
-                        size = Size(protrusionWidth - 2.dp.toPx(), 2.dp.toPx()),
-                        cornerRadius = CornerRadius(1.dp.toPx())
-                    )
-
-                    // Body Outline
-                    drawRoundRect(
-                        color = frameColor,
-                        topLeft = Offset(center.x - bodyWidth / 2, center.y - bodyHeight / 2),
-                        size = Size(bodyWidth, bodyHeight),
-                        cornerRadius = CornerRadius(4.dp.toPx()),
-                        style = Stroke(1.5.dp.toPx())
-                    )
-
-                    // 2. Draw 4 Arms (X-config)
-                    val angles = listOf(45f, 135f, 225f, 315f)
-                    angles.forEachIndexed { index, angleDeg ->
-                        val angleRad = Math.toRadians(angleDeg.toDouble()).toFloat()
-                        val endX = center.x + armLen * cos(angleRad)
-                        val endY = center.y + armLen * sin(angleRad)
-                        
-                        // Draw Arm
-                        drawLine(
-                            color = frameColor,
-                            start = center,
-                            end = Offset(endX, endY),
-                            strokeWidth = 2.dp.toPx()
-                        )
-                        
-                        // Draw Motor/Propeller circle at end
-                        // Front motors can be a different color to indicate heading
-                        val mColor = if (index < 2) accentColor else frameColor
-                            
-                        // Draw propeller "disc" to show top surface - Increase visibility
-                        drawCircle(
-                            color = mColor.copy(alpha = 0.2f),
-                            radius = motorRadius * 2f,
-                            center = Offset(endX, endY)
-                        )
-                        
-                        // Thick motor housing (3D look)
-                        drawCircle(
-                            color = Color.Black.copy(alpha = 0.4f),
-                            radius = motorRadius,
-                            center = Offset(endX, endY + 2.dp.toPx())
-                        )
-                        drawCircle(
-                            color = mColor,
-                            radius = motorRadius,
-                            center = Offset(endX, endY),
-                            style = Stroke(2.dp.toPx())
-                        )
-                        
-                        // Small dot for motor center
-                        drawCircle(
-                            color = mColor,
-                            radius = 1.dp.toPx(),
-                            center = Offset(endX, endY)
-                        )
-                    }
-
-                    // 3. Heading indicator (Forward Arrow on top of body)
-                    // Make it look like it's sticking up
-                    val headLen = 10.dp.toPx()
-                    val path = androidx.compose.ui.graphics.Path().apply {
-                        moveTo(center.x, center.y - bodyHeight / 2 - 6.dp.toPx())
-                        lineTo(center.x - 6.dp.toPx(), center.y - bodyHeight / 2 + headLen)
-                        lineTo(center.x + 6.dp.toPx(), center.y - bodyHeight / 2 + headLen)
-                        close()
-                    }
-                    drawPath(path, color = accentColor)
-                    
-                    // 4. Add a VERY obvious "TOP" label or icon
-                    drawCircle(
-                        color = accentColor,
-                        radius = 2.dp.toPx(),
-                        center = center
-                    )
+                // Roll/Pitch 数值
+                val infoPaint = android.graphics.Paint().apply {
+                    color = android.graphics.Color.WHITE
+                    textSize = 6.dp.toPx()
+                    textAlign = android.graphics.Paint.Align.CENTER
+                    isAntiAlias = true
+                    typeface = android.graphics.Typeface.MONOSPACE
+                    alpha = 120
                 }
+                drawText(
+                    String.format(Locale.US, "R:%+.0f° P:%+.0f°", smoothRoll, smoothPitch),
+                    cx, size.height - 1.dp.toPx(), infoPaint
+                )
             }
         }
     }
 }
+
 
 @Composable
 fun Joystick(
@@ -970,78 +1254,77 @@ fun Joystick(
 
 @Composable
 fun VehicleControlButtonGrid(
-    service: BluetoothLeService?, 
-    modifier: Modifier = Modifier, 
+    service: BluetoothLeService?,
+    modifier: Modifier = Modifier,
     deviceAddress: String? = null,
+    telemetry: FlightCommands.Telemetry,
     onCommandSent: (String) -> Unit = {}
 ) {
-    // Helper to send command with potential UUIDs
     fun sendCmd(data: ByteArray) {
         if (service == null) return
         val prefs = service.getSharedPreferences("afirefly_prefs", Context.MODE_PRIVATE)
         val savedJson = prefs.getString("saved_devices", "[]")
         val devicesArr = try { JSONArray(savedJson) } catch (e: Exception) { JSONArray() }
-        var sUuid: UUID? = null
-        var cUuid: UUID? = null
-        
+        var sUuid: UUID? = null; var cUuid: UUID? = null
         for (i in 0 until devicesArr.length()) {
             val obj = devicesArr.getJSONObject(i)
             if (obj.getString("uid") == deviceAddress) {
                 val sStr = obj.optString("serviceUuid", "")
                 val cStr = obj.optString("charUuid", "")
                 if (sStr.isNotEmpty() && cStr.isNotEmpty()) {
-                    sUuid = UUID.fromString(sStr)
-                    cUuid = UUID.fromString(cStr)
-                }
-                break
+                    sUuid = UUID.fromString(sStr); cUuid = UUID.fromString(cStr)
+                }; break
             }
         }
-
-        if (sUuid != null && cUuid != null) {
-            service.sendData(sUuid, cUuid, data)
-        } else {
-            service.sendData(data)
-        }
+        if (sUuid != null && cUuid != null) service.sendData(sUuid, cUuid, data)
+        else service.sendData(data)
         onCommandSent(data.joinToString("") { "%02X".format(it) })
     }
 
+    val isArmed = telemetry.armState != 0
+    val armButton = if (isArmed) {
+        Triple("DIS", Icons.Default.Lock, Color(0xFFFFB4AB))
+    } else {
+        Triple("ARM", Icons.Default.LockOpen, Color(0xFF7BDB80))
+    }
+
     val buttons = listOf(
-        Triple("ARM", Icons.Default.LockOpen, Color(0xFF7BDB80)),
-        Triple("DISARM", Icons.Default.Lock, Color(0xFFFFB4AB)),
-        Triple("TAKEOFF", Icons.Default.FileUpload, Color(0xFF7BDB80)),
+        armButton,
+        Triple("TKOF", Icons.Default.FileUpload, Color(0xFF7BDB80)),
         Triple("LAND", Icons.Default.FileDownload, Color(0xFF7BDB80)),
         Triple("RTL", Icons.Default.Home, Color(0xFFBECABA)),
-        Triple("E-STOP", Icons.Default.Report, Color.Red)
+        Triple("STOP", Icons.Default.Report, Color.Red)
     )
 
+    // 水平排列，紧凑
     Row(
         modifier = modifier
             .wrapContentWidth()
-            .height(56.dp)
-            .background(Color(0xFF1A1E24).copy(alpha = 0.8f), RoundedCornerShape(28.dp))
-            .border(1.dp, Color.White.copy(alpha = 0.1f), RoundedCornerShape(28.dp))
-            .padding(horizontal = 12.dp),
-        horizontalArrangement = Arrangement.spacedBy(4.dp),
+            .height(40.dp)
+            .background(Color(0xFF1A1E24).copy(alpha = 0.8f), RoundedCornerShape(20.dp))
+            .border(1.dp, Color.White.copy(alpha = 0.1f), RoundedCornerShape(20.dp))
+            .padding(horizontal = 8.dp),
+        horizontalArrangement = Arrangement.spacedBy(2.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         buttons.forEach { (label, icon, color) ->
-            val isEstop = label == "E-STOP"
-            
+            val isEstop = label == "STOP"
+
             Box(
                 modifier = Modifier
-                    .size(width = 44.dp, height = 44.dp)
+                    .size(width = 36.dp, height = 32.dp)
                     .clip(CircleShape)
                     .then(
                         if (isEstop) Modifier.background(Color.Red.copy(alpha = 0.15f))
                         else Modifier
                     )
                     .clickable {
-                        when(label) {
+                        when (label) {
                             "ARM" -> sendCmd(FlightCommands.arm())
-                            "DISARM" -> sendCmd(FlightCommands.disarm())
-                            "TAKEOFF" -> sendCmd(FlightCommands.takeoff(1.0f))
+                            "DIS" -> sendCmd(FlightCommands.disarm())
+                            "TKOF" -> sendCmd(FlightCommands.takeoff(1.0f))
                             "LAND" -> sendCmd(FlightCommands.land())
-                            "E-STOP" -> sendCmd(FlightCommands.emergencyStop())
+                            "STOP" -> sendCmd(FlightCommands.emergencyStop())
                             "RTL" -> sendCmd(FlightCommands.hover())
                         }
                     },
@@ -1052,69 +1335,164 @@ fun VehicleControlButtonGrid(
                     verticalArrangement = Arrangement.Center
                 ) {
                     Icon(
-                        icon, 
-                        null, 
+                        icon, null,
                         tint = if (isEstop) Color.Red else color,
-                        modifier = Modifier.size(18.dp) // Smaller icons from 24dp
+                        modifier = Modifier.size(12.dp)
                     )
                     Text(
                         text = label,
                         color = (if (isEstop) Color.Red else color).copy(alpha = 0.7f),
-                        fontSize = 6.sp, // Even smaller text
+                        fontSize = 5.sp,
                         fontWeight = FontWeight.Bold,
                         fontFamily = FontFamily.Monospace
                     )
                 }
             }
-            
-            // Subtle dot divider instead of line to save space
-            if (buttons.indexOf(Triple(label, icon, color)) != buttons.size - 1) {
-                Box(modifier = Modifier.size(2.dp).background(Color.White.copy(alpha = 0.1f), CircleShape))
-            }
         }
     }
 }
 
+
+
 @Composable
 fun VehicleBottomBar(
-    modifier: Modifier = Modifier, 
+    modifier: Modifier = Modifier,
     telemetry: FlightCommands.Telemetry,
     service: BluetoothLeService?,
-    history: List<String>
+    deviceAddress: String?,
+    history: List<String>,
+    onCommandSent: (String) -> Unit = {}
 ) {
     var showHistory by remember { mutableStateOf(false) }
 
+    // 按钮发送命令
+    fun sendCmd(data: ByteArray) {
+        if (service == null) return
+        val prefs = service.getSharedPreferences("afirefly_prefs", Context.MODE_PRIVATE)
+        val savedJson = prefs.getString("saved_devices", "[]")
+        val devicesArr = try { JSONArray(savedJson) } catch (e: Exception) { JSONArray() }
+        var sUuid: UUID? = null; var cUuid: UUID? = null
+        for (i in 0 until devicesArr.length()) {
+            val obj = devicesArr.getJSONObject(i)
+            if (obj.getString("uid") == deviceAddress) {
+                val sStr = obj.optString("serviceUuid", "")
+                val cStr = obj.optString("charUuid", "")
+                if (sStr.isNotEmpty() && cStr.isNotEmpty()) {
+                    sUuid = UUID.fromString(sStr); cUuid = UUID.fromString(cStr)
+                }; break
+            }
+        }
+        if (sUuid != null && cUuid != null) service.sendData(sUuid, cUuid, data)
+        else service.sendData(data)
+        onCommandSent(data.joinToString("") { "%02X".format(it) })
+    }
+
+    val isArmed = telemetry.armState != 0
+    val armButton = if (isArmed) {
+        Triple("DIS", Icons.Default.Lock, Color(0xFFFFB4AB))
+    } else {
+        Triple("ARM", Icons.Default.LockOpen, Color(0xFF7BDB80))
+    }
+    val buttons = listOf(
+        armButton,
+        Triple("TKOF", Icons.Default.FileUpload, Color(0xFF7BDB80)),
+        Triple("LAND", Icons.Default.FileDownload, Color(0xFF7BDB80)),
+        Triple("RTL", Icons.Default.Home, Color(0xFFBECABA)),
+        Triple("STOP", Icons.Default.Report, Color.Red)
+    )
 
     Box(
         modifier = modifier
             .fillMaxWidth()
-            .height(32.dp)
-            .background(Color(0xFF0A0E14).copy(alpha = 0.8f))
-            .padding(horizontal = 16.dp),
-        contentAlignment = Alignment.CenterStart // Change to start-aligned
+            .height(36.dp)
+            .background(Color(0xFF0A0E14).copy(alpha = 0.85f))
+            .padding(horizontal = 12.dp),
+        contentAlignment = Alignment.Center
     ) {
         Row(
             modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            // Left-aligned telemetry items
-            Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-                val q = telemetry.quaternion
-                TelemetryItem("QUAT", String.format(Locale.US, "W:%.2f X:%.2f Y:%.2f Z:%.2f", q[0], q[1], q[2], q[3]))
-                TelemetryItem("ALT", String.format(Locale.US, "%.2fm", telemetry.altitude))
-                TelemetryItem("SPD", String.format(Locale.US, "%.2fm/s", telemetry.velocity))
-                if (telemetry.latitude != 0.0) {
-                    TelemetryItem("GPS", String.format(Locale.US, "%.5f,%.5f", telemetry.latitude, telemetry.longitude))
+            // ── 左侧：控制按钮（紧凑水平排列） ──
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(2.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                buttons.forEach { (label, icon, color) ->
+                    val isEstop = label == "STOP"
+                    Box(
+                        modifier = Modifier
+                            .size(width = 30.dp, height = 28.dp)
+                            .clip(RoundedCornerShape(4.dp))
+                            .then(
+                                if (isEstop) Modifier.background(Color.Red.copy(alpha = 0.15f))
+                                else Modifier.background(Color.White.copy(alpha = 0.05f))
+                            )
+                            .clickable {
+                                when (label) {
+                                    "ARM" -> sendCmd(FlightCommands.arm())
+                                    "DIS" -> sendCmd(FlightCommands.disarm())
+                                    "TKOF" -> sendCmd(FlightCommands.takeoff(1.0f))
+                                    "LAND" -> sendCmd(FlightCommands.land())
+                                    "STOP" -> sendCmd(FlightCommands.emergencyStop())
+                                    "RTL" -> sendCmd(FlightCommands.hover())
+                                }
+                            },
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(2.dp)
+                        ) {
+                            Icon(
+                                icon, null,
+                                tint = if (isEstop) Color.Red else color,
+                                modifier = Modifier.size(10.dp)
+                            )
+                            Text(
+                                text = label,
+                                color = (if (isEstop) Color.Red else color).copy(alpha = 0.8f),
+                                fontSize = 6.sp,
+                                fontWeight = FontWeight.Bold,
+                                fontFamily = FontFamily.Monospace
+                            )
+                        }
+                    }
                 }
             }
 
-            // Right-aligned history preview
+            // ── 分隔线 ──
+            Box(
+                modifier = Modifier
+                    .padding(horizontal = 8.dp)
+                    .width(1.dp)
+                    .height(16.dp)
+                    .background(Color.White.copy(alpha = 0.15f))
+            )
+
+            // ── 中间：遥测数据 ──
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.weight(1f)
+            ) {
+                val q = telemetry.quaternion
+                TelemetryItem("Q",
+                    String.format(Locale.US, "W:%.2f X:%.2f Y:%.2f Z:%.2f",
+                        q[0], q[1], q[2], q[3]))
+                if (telemetry.latitude != 0.0) {
+                    TelemetryItem("GPS",
+                        String.format(Locale.US, "%.5f,%.5f",
+                            telemetry.latitude, telemetry.longitude))
+                }
+            }
+
+            // ── 右侧：最近命令 ──
             Box(modifier = Modifier.clickable { if (history.isNotEmpty()) showHistory = true }) {
                 Text(
                     text = history.firstOrNull() ?: "NO CMD",
-                    color = Color(0xFF7BDB80).copy(alpha = 0.6f),
-                    fontSize = 10.sp,
+                    color = Color(0xFF7BDB80).copy(alpha = 0.5f),
+                    fontSize = 9.sp,
                     fontFamily = FontFamily.Monospace,
                     maxLines = 1
                 )
@@ -1122,6 +1500,7 @@ fun VehicleBottomBar(
         }
     }
 
+    // 命令历史弹窗
     if (showHistory) {
         @OptIn(ExperimentalMaterial3Api::class)
         ModalBottomSheet(
@@ -1130,34 +1509,23 @@ fun VehicleBottomBar(
             contentColor = Color.White
         ) {
             LazyColumn(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(16.dp)
+                modifier = Modifier.fillMaxWidth().padding(16.dp)
             ) {
                 item {
-                    Text(
-                        "Command History", 
-                        fontWeight = FontWeight.Bold, 
-                        fontSize = 16.sp, 
-                        color = Color(0xFF7BDB80),
-                        modifier = Modifier.padding(bottom = 16.dp)
-                    )
+                    Text("Command History", fontWeight = FontWeight.Bold, fontSize = 16.sp,
+                        color = Color(0xFF7BDB80), modifier = Modifier.padding(bottom = 16.dp))
                 }
                 items(history) { cmd ->
-                    Text(
-                        cmd, 
-                        fontFamily = FontFamily.Monospace, 
-                        fontSize = 14.sp,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(vertical = 8.dp)
-                    )
+                    Text(cmd, fontFamily = FontFamily.Monospace, fontSize = 14.sp,
+                        modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp))
                     HorizontalDivider(color = Color.White.copy(alpha = 0.1f))
                 }
             }
         }
     }
 }
+
+
 
 @Composable
 fun TelemetryItem(label: String, value: String) {
@@ -1233,7 +1601,7 @@ fun PidMiniChart(label: String, telemetry: FlightCommands.Telemetry, baseColor: 
 
                 fun drawHistory(history: List<Float>, color: Color) {
                     if (history.size > 1) {
-                        val range = 50f
+                        val range = 80f
                         val path = androidx.compose.ui.graphics.Path()
                         history.forEachIndexed { i, v ->
                             val x = i * (size.width / (history.size - 1))
@@ -1261,10 +1629,5 @@ fun GreetingPreview() {
         VehicleScreen(null, "Device Name", "00:11:22:33:44:55")
     }
 }
-
-
-
-
-
 
 
