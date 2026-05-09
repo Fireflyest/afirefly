@@ -33,6 +33,9 @@ class BluetoothLeService : Service() {
     private val _discoveredServices = MutableStateFlow<List<BluetoothGattService>>(emptyList())
     val discoveredServices: StateFlow<List<BluetoothGattService>> = _discoveredServices
 
+    private val _receivedRawData = MutableSharedFlow<ByteArray>(extraBufferCapacity = 64)
+    val receivedRawData: SharedFlow<ByteArray> = _receivedRawData
+
     private val _receivedData = MutableSharedFlow<ByteArray>(extraBufferCapacity = 64)
     val receivedData: SharedFlow<ByteArray> = _receivedData
 
@@ -304,6 +307,9 @@ class BluetoothLeService : Service() {
         }
 
         internal fun processIncomingData(data: ByteArray) {
+
+            _receivedRawData.tryEmit(data)
+
             synchronized(rxBufferLock) {
                 // Append new data to buffer
                 rxBuffer += data

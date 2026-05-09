@@ -258,28 +258,39 @@ fun MainScreen() {
     val sUuidStr = currentDevice?.serviceUuid
     val cUuidStr = currentDevice?.charUuid
 
-    LaunchedEffect(bluetoothService, isHexGlobal, selectedDeviceUid, sUuidStr, cUuidStr) {
+    LaunchedEffect(bluetoothService, serviceState) {
         bluetoothService?.let { service ->
-            // Try enabling notifications if we have UUIDs
-            if (sUuidStr != null && cUuidStr != null) {
-                try {
-                    service.enableNotifications(UUID.fromString(sUuidStr), UUID.fromString(cUuidStr))
-                } catch (e: Exception) {
-                    e.printStackTrace()
+            if (serviceState == BluetoothLeService.STATE_CONNECTED) {
+                service.receivedRawData.collect { data ->
+                    // ★ 确认 VehicleActivity 状态正确
+                    if (VehicleActivity.isVehicleActivityActive) return@collect
+
+                    val timestamp = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date())
+                    val displayData = if (isHexGlobal) {
+                        data.joinToString(" ") { "%02X".format(it) }
+                    } else {
+                        String(data, Charsets.UTF_8)
+                    }
+                    logs.add("$timestamp RX: $displayData")
                 }
             }
+        }
+    }
 
-            service.receivedData.collect { data ->
-                // Check if VehicleActivity is active to avoid redundant logging
-                if (VehicleActivity.isVehicleActivityActive) return@collect
-
+    LaunchedEffect(serviceState, sUuidStr, cUuidStr) {
+        if (serviceState == BluetoothLeService.STATE_CONNECTED
+            && sUuidStr != null && cUuidStr != null) {
+            try {
+                bluetoothService?.enableNotifications(
+                    UUID.fromString(sUuidStr),
+                    UUID.fromString(cUuidStr)
+                )
                 val timestamp = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date())
-                val displayData = if (isHexGlobal) {
-                    data.joinToString("") { "%02X ".format(it) }
-                } else {
-                    String(data, Charsets.UTF_8)
-                }
-                logs.add("$timestamp RX: $displayData")
+                logs.add("$timestamp INFO: Notifications enabled [$sUuidStr / $cUuidStr]")
+            } catch (e: Exception) {
+                e.printStackTrace()
+                val timestamp = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date())
+                logs.add("$timestamp ERROR: Failed to enable notifications: ${e.message}")
             }
         }
     }
@@ -1016,6 +1027,12 @@ fun TopHeader(
                             // Auto-save selection to device
                             devices.find { it.uid == selectedDeviceUid }?.let { dev ->
                                 onDeviceSave(dev.copy(serviceUuid = uuidStr))
+                            }
+                            if (selectedServiceUuid != null) {
+                                bluetoothService?.enableNotifications(
+                                    UUID.fromString(selectedServiceUuid),
+                                    UUID.fromString(uuidStr)
+                                )
                             }
                         }
                     )

@@ -295,6 +295,7 @@ fun AttitudeHUD(
     val q = if (quaternion.size >= 4) quaternion else floatArrayOf(1f, 0f, 0f, 0f)
     val w = q[0]; val x = q[1]; val y = q[2]; val z = q[3]
 
+    // ── 四元数 → 欧拉角 ──
     val rollRad  = atan2(2f * (w * x + y * z), 1f - 2f * (x * x + y * y))
     val pitchRad = asin((2f * (w * y - z * x)).coerceIn(-1f, 1f))
     val yawRad   = atan2(2f * (w * z + x * y), 1f - 2f * (y * y + z * z))
@@ -364,19 +365,26 @@ fun AttitudeHUD(
         // ═══════════════════════════════════════════════════
         rotate(-smoothRoll, Offset(cx, cy)) {
             val horizonY = cy + smoothPitch * ppd
+            
+            // 为了解决旋转时的边缘黑色区域，将绘制区域放大
+            val drawExtra = max(size.width, size.height) * 0.5f
+            val drawWidth = size.width + drawExtra * 2
+            val drawHeight = size.height + drawExtra * 2
+            val drawLeft = -drawExtra
+            val drawTop = -drawExtra
 
             // 天空
             drawRect(
                 color = Color(0xFF1A3A5C).copy(alpha = 0.12f),
-                topLeft = Offset.Zero,
-                size = Size(size.width, horizonY.coerceIn(0f, size.height))
+                topLeft = Offset(drawLeft, drawTop),
+                size = Size(drawWidth, (horizonY - drawTop).coerceAtLeast(0f))
             )
 
             // 地面
             drawRect(
                 color = Color(0xFF5D4037).copy(alpha = 0.10f),
-                topLeft = Offset(0f, horizonY),
-                size = Size(size.width, (size.height - horizonY).coerceAtLeast(0f))
+                topLeft = Offset(drawLeft, horizonY),
+                size = Size(drawWidth, (drawTop + drawHeight - horizonY).coerceAtLeast(0f))
             )
 
             // 俯仰阶梯线
@@ -973,12 +981,18 @@ fun AttitudeIndicator(
     val q = if (quaternion.size >= 4) quaternion else floatArrayOf(1f, 0f, 0f, 0f)
     val w = q[0]; val x = q[1]; val y = q[2]; val z = q[3]
 
-    // ── 四元数 → 欧拉角（航空航天约定：FRD 机体 / NED 世界）──
-    // Roll  (φ): 绕机体 X 轴（机头方向），正 = 右倾
-    // Pitch (θ): 绕机体 Y 轴（右方向），正 = 抬头
-    // Yaw   (ψ): 绕机体 Z 轴（下方向），正 = 右转
+    // ── 四元数 → 欧拉角（增加保护处理，防止万向节死锁或数值波动导致的瞬间翻转）──
     val rollRad  = atan2(2f * (w * x + y * z), 1f - 2f * (x * x + y * y))
-    val pitchRad = asin((2f * (w * y - z * x)).coerceIn(-1f, 1f))
+    
+    // sinTheta 在接近 1 或 -1 时（即飞行器垂直向上或向下），asin 会非常敏感
+    val sinTheta = 2f * (w * y - z * x)
+    val pitchRad = if (abs(sinTheta) >= 0.999f) {
+        // 垂直状态下，roll 和 yaw 会共线，这里进行简化处理
+        (sign(sinTheta) * PI / 2).toFloat()
+    } else {
+        asin(sinTheta.coerceIn(-1f, 1f))
+    }
+    
     val yawRad   = atan2(2f * (w * z + x * y), 1f - 2f * (y * y + z * z))
 
     val targetRoll  = rollRad * 180f / PI.toFloat()
@@ -1018,8 +1032,8 @@ fun AttitudeIndicator(
                 // 天空（地平线以上）
                 drawRect(
                     color = Color(0xFF1565C0),
-                    topLeft = Offset.Zero,
-                    size = Size(size.width, horizonY.coerceIn(0f, size.height))
+                    topLeft = Offset(0f, 0f),
+                    size = Size(size.width, (horizonY).coerceAtLeast(0f))
                 )
 
                 // 地面（地平线以下）
@@ -1601,7 +1615,7 @@ fun PidMiniChart(label: String, telemetry: FlightCommands.Telemetry, baseColor: 
 
                 fun drawHistory(history: List<Float>, color: Color) {
                     if (history.size > 1) {
-                        val range = 80f
+                        val range = 100f
                         val path = androidx.compose.ui.graphics.Path()
                         history.forEachIndexed { i, v ->
                             val x = i * (size.width / (history.size - 1))
@@ -1629,5 +1643,9 @@ fun GreetingPreview() {
         VehicleScreen(null, "Device Name", "00:11:22:33:44:55")
     }
 }
+
+
+
+
 
 
